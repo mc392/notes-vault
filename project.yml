@@ -1,0 +1,82 @@
+# XcodeGen spec. `xcodegen generate` turns this into NotesVault.xcodeproj.
+#
+# The project file is generated rather than committed on purpose: a .pbxproj is unreadable
+# in review, conflicts badly, and is the one file in an app repo nobody can sanity-check by
+# eye. Everything that matters about the target is in this file instead.
+name: NotesVault
+
+options:
+  bundleIdPrefix: com.charlottebloor
+  createIntermediateGroups: true
+  deploymentTarget:
+    iOS: "17.0"
+    macOS: "14.0"
+
+packages:
+  NotesVault:
+    path: .
+
+targets:
+  NotesVault:
+    type: application
+    supportedDestinations: [iOS, macOS]
+    sources:
+      - path: Sources/NotesVaultApp
+    dependencies:
+      - package: NotesVault
+        product: NotesVaultCore
+      - package: NotesVault
+        product: NotesVaultCrypto
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.charlottebloor.notesvault
+        PRODUCT_NAME: Notes Vault
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "5.9"
+        SWIFT_STRICT_CONCURRENCY: minimal
+        ENABLE_HARDENED_RUNTIME: YES
+        SWIFT_TREAT_WARNINGS_AS_ERRORS: NO
+        # No usage descriptions for camera, photos, microphone or contacts, because the app
+        # asks for none of them. v1 is typed notes only (decision 03).
+    info:
+      path: Sources/NotesVaultApp/Resources/Info.plist
+      properties:
+        CFBundleDisplayName: Notes Vault
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSApplicationCategoryType: public.app-category.medical
+        UILaunchScreen:
+          UIColorName: ""
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        # Required before LocalAuthentication will prompt at all on iOS. Without it the
+        # biometric unlock fails silently at runtime.
+        NSFaceIDUsageDescription: >-
+          Face ID unlocks your clinical notes on this device. Your passphrase is stored in
+          this device's keychain and never leaves it.
+        # The app makes no network connections of its own. Declaring this makes that
+        # checkable rather than a claim in the marketing copy.
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: false
+    entitlements:
+      path: Sources/NotesVaultApp/Resources/NotesVault.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        # The only file permission the app has: folders the user picks by hand. No iCloud
+        # container entitlement, no network client entitlement — it cannot reach a server
+        # even if a future change tried to.
+        com.apple.security.files.user-selected.read-write: true
+
+schemes:
+  NotesVault:
+    build:
+      targets:
+        NotesVault: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      gatherCoverageData: true

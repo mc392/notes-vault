@@ -1,0 +1,7 @@
+# Written on Windows, built on macOS. Normalise to LF in the repository so the toolchain
+# on the runner never sees a stray carriage return.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.pdf binary
