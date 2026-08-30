@@ -16,3 +16,6 @@ Sources/NotesVaultApp/Resources/NotesVault.entitlements
 *.client
 *.cryptomator
 NotesVault Export*/
+
+# Scratch file for pasting CI logs into — never part of the project.
+ci-errors.txt

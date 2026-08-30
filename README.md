@@ -40,8 +40,8 @@ swift test
 **What a green build does not prove.** No screen in this app has ever been drawn. Nobody has
 opened the document picker, seen a recovery key, or synced a note between two devices. A
 compiler checks that the code is well-formed, and the tests check that the storage and
-cryptography behave; neither has any opinion on whether the app is usable. Stages 2 and 3
-below are where that gets found out.
+cryptography behave; neither has any opinion on whether the app is usable. [RUNNING.md](RUNNING.md)
+is how that gets found out.
 
 ---
 
@@ -64,60 +64,59 @@ is [`cryptolib-swift`](https://github.com/cryptomator/cryptolib-swift), resolved
 
 ## Finishing the build
 
-Three stages. Each is cheap, and each rules out a class of failure that would otherwise
+Two stages. Each is cheap, and each rules out a class of failure that would otherwise
 muddy the next one. Do them in order — chasing an iCloud sync bug in something that has a
 type error in it is a bad afternoon.
 
-### Stage 1 — no Mac required, do it today
+### ✅ Stage 1 — compiles and passes its tests. Done 30 August 2026.
 
-Push. `.github/workflows/ci.yml` runs on GitHub's macOS runners and does everything a
-compiler can do:
+`.github/workflows/ci.yml` runs on GitHub's macOS runners on every push and does everything
+a compiler can do: `swift test`, then `xcodegen generate` and `xcodebuild` for macOS and iOS
+Simulator with signing off. It is green.
 
-- `swift test` — 73 tests across the core (stubbed crypto, fast) and the crypto integration
-  target (real scrypt, real vault, real folder on disk);
-- `xcodegen generate` then `xcodebuild` for **macOS** and **iOS Simulator**, signing off.
+**The loop, for when a change breaks it.** Push, then:
 
-That answers: does it compile, does it link, does `project.yml` produce a valid project, and
-is what lands on disk a genuine Cryptomator vault.
+```bash
+gh run list --limit 1
+```
 
-**Expect the first run to be red.** Nearly six thousand lines of Swift have never been near
-a compiler. Work top-down — in Swift the first error routinely explains the next five, and
-re-running after each fix is faster than reading the whole log.
+Take the run ID from that and get only what failed — the ID is required, because `gh` cannot
+prompt for it while its output is going to a file, and silently writes nothing instead:
 
-macOS runner minutes are free for public repositories and bill at 10× the Linux rate for
-private ones, which is worth knowing before this runs on every push.
+```bash
+gh run view RUN_ID --log-failed > ci-errors.txt
+```
 
-### Stage 2 — on a Mac, a couple of hours
+Only lines containing `error:` matter; ignore `warning:`. A build that fails in under thirty
+seconds is a setup or toolchain problem, not your code — nothing has been compiled yet at
+that point.
 
-1. `xcodegen generate && open NotesVault.xcodeproj`, run the macOS target.
-2. Click the whole flow through: create a vault in an empty folder, write down the recovery
-   key, type it back, add a client, write a note, lock, unlock, correct the note, export.
-3. **The interop test, which is the highest-value hour in this whole list.** Install
-   [Cryptomator](https://cryptomator.org) and point it at the vault this app created, using
-   the same passphrase. If it opens and shows `SM2/2026-06-14T0930-mac.note` with readable
-   content, the vault format is correct — verified against the reference implementation
-   rather than against my own assumptions. If it does not open, the bug is in
-   `VaultBootstrap` or `VaultLayout`, and no amount of device testing will find it.
-4. Then the reverse: create a vault in Cryptomator, open it in this app. It should be empty
-   and usable, and any long or `.c9s`-shortened names should be *reported and skipped*
-   rather than crashing a listing.
+### Stage 2 — a Mac and an iPhone
 
-### Stage 3 — real devices, and an Apple Developer Program membership (£79/$99 a year)
+**Step-by-step walkthrough: [RUNNING.md](RUNNING.md).** Written for a borrowed Mac, and
+arranged so that by the end of the session TestFlight delivers new builds to the phone
+without needing one again.
 
-Only hardware answers these, and the simulator will cheerfully lie about all of them:
+What only hardware can answer, and what a simulator would lie about:
 
-- **The document picker into a live iCloud Drive folder.** This is the handover's own first
-  next step, and the single most likely thing to need rework. Security-scoped bookmarks
-  behave differently on device, and a folder inside iCloud Drive is not the same as a folder
-  that merely looks like one.
+- **The document picker into a live iCloud Drive folder.** The handover's own first next
+  step, and the single most likely thing to need rework. Security-scoped bookmarks behave
+  differently on device, and a folder inside iCloud Drive is not the same as a folder that
+  merely looks like one.
+- **The Cryptomator interop check.** Open an app-created vault in Cryptomator's own app. It
+  is the only evidence that the format is right which does not depend on our own tests
+  agreeing with themselves. If it fails, the bug is in `VaultBootstrap` or `VaultLayout` and
+  no amount of device testing will find it. The reverse direction matters too: a vault made
+  by Cryptomator should open here, with any `.c9s` shortened names *reported and skipped*
+  rather than crashing a listing.
 - **Placeholder downloads.** Put the phone in airplane mode, add a note on the Mac, then open
   the vault on the phone with data back on. `FileSystemVaultStore.ensureDownloaded` is
-  written for this and has never faced it.
-- **Face ID / Touch ID.** `NSFaceIDUsageDescription` is set; biometrics do not exist in the
-  simulator in any meaningful way.
+  written for exactly this and has never faced it.
+- **Face ID / Touch ID.** `NSFaceIDUsageDescription` is set; biometrics do not meaningfully
+  exist in a simulator.
 - **Two devices, both offline, both writing.** Write a note for the same client on each with
-  sync off, then let them both sync. Both notes must survive. This is the append-only claim,
-  and it is the property the whole file format was chosen for.
+  sync off, then let them both sync. Both notes must survive — this is the append-only claim,
+  and the property the whole file format was chosen for.
 - **Background sync with file protection.** Confirm notes written while the phone is locked
   still upload.
 
