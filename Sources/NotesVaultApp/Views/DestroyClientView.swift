@@ -41,7 +41,7 @@ struct DestroyClientView: View {
                         if client.supersededCount > 0 {
                             Text("· \(client.supersededCount) earlier version\(client.supersededCount == 1 ? "" : "s")")
                         }
-                        Text("· the folder for \(client.code) and its status history")
+                        Text("· the folder for \(client.code.rawValue) and its status history")
                         if let first = client.firstContact, let last = client.lastContact {
                             Text("· covering \(Formatted.date(first)) to \(Formatted.date(last))")
                         }
@@ -113,6 +113,7 @@ struct DestroyClientView: View {
                 }
             }
         }
+        .vaultSheet(minHeight: 600)
     }
 
     /// Three seconds between "everything is filled in" and "the button works", restarted

@@ -211,7 +211,7 @@ struct ClientSettingsView: View {
                 }
 
                 Section {
-                    Button("Destroy all notes for \(client.code)", role: .destructive) {
+                    Button("Destroy all notes for \(client.code.rawValue)", role: .destructive) {
                         destroying = true
                     }
                 } footer: {
@@ -241,5 +241,6 @@ struct ClientSettingsView: View {
                 DestroyClientView(client: client) { dismiss() }
             }
         }
+        .vaultSheet(minHeight: 480)
     }
 }

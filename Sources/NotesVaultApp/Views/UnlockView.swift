@@ -148,5 +148,6 @@ struct RecoverAccessView: View {
                 }
             }
         }
+        .vaultSheet()
     }
 }

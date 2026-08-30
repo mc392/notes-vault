@@ -2,6 +2,29 @@ import SwiftUI
 import NotesVaultCore
 
 extension View {
+    /// A sheet that is big enough to hold a form.
+    ///
+    /// On iOS a sheet fills the screen and this does nothing. On macOS a sheet takes its
+    /// size from its content, and a `Form` reports a very modest ideal width — so every
+    /// sheet in this app opened as a cramped box with the date picker and the longer
+    /// labels running off the edge. Sizing them here rather than at each call site means a
+    /// new sheet cannot be added without one.
+    @ViewBuilder
+    func vaultSheet(minWidth: CGFloat = 560, minHeight: CGFloat = 520) -> some View {
+        #if os(macOS)
+        self.frame(
+            minWidth: minWidth,
+            idealWidth: minWidth,
+            maxWidth: .infinity,
+            minHeight: minHeight,
+            idealHeight: minHeight,
+            maxHeight: .infinity
+        )
+        #else
+        self
+        #endif
+    }
+
     /// Entry fields for keys and client codes: upper case, no autocorrect.
     ///
     /// iOS will happily "correct" a client code into a word and capitalise the first letter

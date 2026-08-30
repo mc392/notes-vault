@@ -44,6 +44,18 @@ struct SettingsView: View {
             }
 
             Section {
+                NavigationLink {
+                    NoteFieldsSettingsView()
+                } label: {
+                    LabeledContent("Note fields", value: "\(model.noteFields.enabled.count) on")
+                }
+            } header: {
+                Text("Notes")
+            } footer: {
+                Text("Record more than the date against each session — a session number, a location, or fields you define yourself.")
+            }
+
+            Section {
                 Stepper(
                     "Keep adult notes for \(model.retentionPolicy.adultYears) years",
                     value: $model.retentionPolicy.adultYears,
@@ -138,6 +150,7 @@ struct ChangePassphraseView: View {
                 }
             }
         }
+        .vaultSheet(minHeight: 420)
     }
 }
 
@@ -192,6 +205,7 @@ struct ReissueRecoveryKeyView: View {
                 }
             }
         }
+        .vaultSheet(minHeight: 440)
     }
 }
 

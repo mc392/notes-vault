@@ -42,9 +42,12 @@ struct NoteDetailView: View {
                 }
 
                 if let note {
-                    Text(note.body)
-                        .font(.body)
-                        .textSelection(.enabled)
+                    let extras = model.noteFields.describe(headers: note.extraHeaders)
+                    if !extras.isEmpty {
+                        NoteFieldSummary(entries: extras)
+                    }
+
+                    NoteBodyText(body: note.body)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else if let loadFailure {
                     VStack(alignment: .leading, spacing: 8) {
@@ -87,5 +90,76 @@ struct NoteDetailView: View {
                 NoteEditorView(client: entry.client, correcting: note)
             }
         }
+    }
+}
+
+/// The extra fields a note was written with, above the note itself. Shown as a plain list
+/// rather than folded into the body, because they are metadata about the session and the
+/// body is the clinical account of it.
+private struct NoteFieldSummary: View {
+    let entries: [(label: String, value: String)]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(entries, id: \.label) { entry in
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(entry.label)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(minWidth: 110, alignment: .leading)
+                    Text(entry.value)
+                        .font(.callout)
+                        .textSelection(.enabled)
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+}
+
+/// Renders the note's Markdown.
+///
+/// Deliberately a small renderer rather than a library: this app supports subheadings,
+/// bullets, bold and italic and nothing else, and every one of those is still readable as
+/// plain text if this code disappears tomorrow. `AttributedString(markdown:)` handles the
+/// inline markers; the block markers are handled here, because it does not do headings.
+private struct NoteBodyText: View {
+    let body_: String
+
+    init(body: String) { self.body_ = body }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(Array(NoteMarkdown.blocks(in: body_).enumerated()), id: \.offset) { _, block in
+                switch block {
+                case let .heading(text):
+                    Text(inline(text))
+                        .font(.headline)
+                        .padding(.top, 6)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                case let .bullet(text):
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text("•").font(.body).foregroundStyle(.secondary)
+                        Text(inline(text)).font(.body)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                case let .paragraph(text):
+                    Text(inline(text))
+                        .font(.body)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                case .blank:
+                    Spacer().frame(height: 2)
+                }
+            }
+        }
+        .textSelection(.enabled)
+    }
+
+    /// Falls back to the raw text if the markers do not parse, so a stray asterisk in a
+    /// clinical note never costs the counsellor a line of their record.
+    private func inline(_ text: String) -> AttributedString {
+        (try? AttributedString(markdown: text)) ?? AttributedString(text)
     }
 }

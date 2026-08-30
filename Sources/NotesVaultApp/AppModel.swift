@@ -36,6 +36,14 @@ public final class AppModel: ObservableObject {
     @Published public var retentionPolicy = RetentionPolicy.bacpDefault {
         didSet { persistRetentionPolicy() }
     }
+    /// Which extra fields the note screen offers. A device setting, like the retention
+    /// policy — turning a field on never writes anything to the vault.
+    @Published public var noteFields = NoteFieldSettings.default {
+        didSet { persistNoteFields() }
+    }
+
+    /// The name this device writes into every note it creates.
+    public var deviceDisplayName: String { DeviceIdentity.current }
 
     public var biometricsAvailable: Bool { KeychainStore.biometricsAvailable }
     public var biometricsEnrolled: Bool {
@@ -51,9 +59,11 @@ public final class AppModel: ObservableObject {
 
     private static let queue = DispatchQueue(label: "com.charlottebloor.notesvault.vault", qos: .userInitiated)
     private static let retentionKey = "retention.policy"
+    private static let noteFieldsKey = "note.fields"
 
     public init() {
         loadRetentionPolicy()
+        loadNoteFields()
     }
 
     // MARK: - Lifecycle
@@ -202,6 +212,7 @@ public final class AppModel: ObservableObject {
         sessionDate: Date,
         template: NoteTemplate,
         body: String,
+        fieldValues: [String: String] = [:],
         supersedes: NoteID? = nil
     ) async {
         guard let store else { return }
@@ -212,6 +223,7 @@ public final class AppModel: ObservableObject {
             device: store.deviceName,
             template: template,
             supersedes: supersedes,
+            extraHeaders: noteFields.headers(from: fieldValues),
             body: body
         )
         await run("Saving…") {
@@ -403,5 +415,18 @@ public final class AppModel: ObservableObject {
     private func persistRetentionPolicy() {
         guard let data = try? JSONEncoder().encode(retentionPolicy) else { return }
         UserDefaults.standard.set(data, forKey: Self.retentionKey)
+    }
+
+    private func loadNoteFields() {
+        guard let data = UserDefaults.standard.data(forKey: Self.noteFieldsKey),
+              let stored = try? JSONDecoder().decode(NoteFieldSettings.self, from: data) else { return }
+        // Normalised so a built-in added in a later version appears for someone who has
+        // already saved their settings once.
+        noteFields = stored.normalised()
+    }
+
+    private func persistNoteFields() {
+        guard let data = try? JSONEncoder().encode(noteFields) else { return }
+        UserDefaults.standard.set(data, forKey: Self.noteFieldsKey)
     }
 }

@@ -5,6 +5,7 @@ import Foundation
 /// someone's clinical record must never answer a failed save with "Error -43".
 public enum VaultError: Error, Equatable, LocalizedError {
     case invalidClientCode(String, reason: String)
+    case invalidNoteField(String, reason: String)
     case malformedNote(String)
     case unsupportedNoteFormat(Int)
     case noteNotFound(NoteID)
@@ -24,6 +25,8 @@ public enum VaultError: Error, Equatable, LocalizedError {
         switch self {
         case let .invalidClientCode(code, reason):
             return "\"\(code)\" isn't a usable client code — \(reason)."
+        case let .invalidNoteField(label, reason):
+            return "\"\(label)\" can't be used as a note field — \(reason)."
         case let .malformedNote(detail):
             return "That note file couldn't be read: \(detail)"
         case let .unsupportedNoteFormat(version):
