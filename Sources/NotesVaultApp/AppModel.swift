@@ -57,7 +57,7 @@ public final class AppModel: ObservableObject {
     private var indexStore: IndexStore?
     private var vaultID: String?
 
-    private static let queue = DispatchQueue(label: "com.charlottebloor.notesvault.vault", qos: .userInitiated)
+    private static let queue = DispatchQueue(label: "com.charlottebloor.groundworknotes.vault", qos: .userInitiated)
     private static let retentionKey = "retention.policy"
     private static let noteFieldsKey = "note.fields"
 
@@ -314,7 +314,7 @@ public final class AppModel: ObservableObject {
             let accessed = destination.startAccessingSecurityScopedResource()
             defer { if accessed { destination.stopAccessingSecurityScopedResource() } }
 
-            let root = destination.appendingPathComponent("NotesVault Export \(VaultDate.filenameStamp(Date()))", isDirectory: true)
+            let root = destination.appendingPathComponent("GroundWork Notes Export \(VaultDate.filenameStamp(Date()))", isDirectory: true)
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
 
             var count = 0

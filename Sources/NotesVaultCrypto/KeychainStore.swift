@@ -16,7 +16,7 @@ import NotesVaultCore
 ///
 /// Neither is ever written into the vault folder, so neither is ever synced anywhere.
 public enum KeychainStore {
-    private static let service = "com.charlottebloor.notesvault"
+    private static let service = "com.charlottebloor.groundworknotes"
 
     public enum Purpose: String {
         case indexKey = "index-key"

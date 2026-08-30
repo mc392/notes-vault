@@ -1,4 +1,4 @@
-# Notes Vault
+# GroundWork Notes
 
 A zero-knowledge clinical notes app for BACP counsellors. Built to the requirements in the
 [Notes Vault Handover](https://claude.ai/code/artifact/f47578e9-9e6a-4d97-ae93-9fd4381aa3c9)
@@ -56,6 +56,16 @@ open NotesVault.xcodeproj
 `project.yml` is the source of truth for the app target; the `.xcodeproj` is generated and
 gitignored, because a `.pbxproj` is a file nobody can review by eye and everybody conflicts
 in.
+
+The app icon is generated too. `tools/icon.py` draws it from GroundWork's own palette — the
+sage gradient, the foreground white, the brand green — and the leaf outline is the exact
+Bezier from GroundWork's `A-leaf-refined.svg` rather than a redrawing of it. The PNGs are
+committed so the app builds without Python, but they are output rather than source: change
+the palette at the top of that file and re-run it, rather than editing the images.
+
+```bash
+pip install Pillow && python3 tools/icon.py
+```
 
 Requirements: Xcode 15+, iOS 17 / macOS 14 deployment targets. The one external dependency
 is [`cryptolib-swift`](https://github.com/cryptomator/cryptolib-swift), resolved by SwiftPM.
@@ -222,7 +232,7 @@ nothing else.
 | Typed notes only | `NoteEditorView`. No camera, photo, or microphone usage strings — the app cannot ask for them |
 | Cryptomator's vault format | `CryptomatorEngine` + `VaultBootstrap`. All cryptography is delegated; there is no bespoke primitive to review |
 | Freemium | Not built. No paywall, no entitlement check, no analytics — nothing to unpick when the free/paid line is decided |
-| Separate brand, shared trust story | Standalone package, own bundle ID, no code shared with GroundWork |
+| Separate brand, shared trust story | **Revised 30 August 2026.** Named *GroundWork Notes* and given GroundWork's icon language, so the trust story is shared openly rather than implied. Still a standalone package with its own bundle ID and no shared code — the tie is brand, not architecture |
 | Configurable templates, freeform default | `NoteTemplate`. A template prefills and then gets out of the way; nothing enforces headings |
 | Recovery phrase, shown once | `RecoveryKey` + `RecoveryKeyView` — **see the deviation below** |
 | Identity register external | `ClientCode` rejects anything with a space or punctuation. There is nowhere to put a name |
@@ -300,7 +310,17 @@ with the counsellor's insurer before launch; the constant is one field on `Reten
 
 ## Open product questions, unchanged from the handover
 
-Still open, still not quietly assumed anywhere in this code: the product name, the free/paid
+The product name is settled: **GroundWork Notes**, decided 30 August 2026, with an icon built
+from GroundWork's own — the same sage gradient, the same leaf, a notepad where the bar chart
+was. The page is drawn rather than filled, which is the one deliberate departure: GroundWork's
+icon is solid and chunky, and this is lighter. The leaf stays solid so it keeps GroundWork's own
+treatment and still carries weight once the strokes thin out at small sizes.
+
+iOS truncates home-screen labels at roughly twelve characters, so the icon is labelled
+**GW Notes** via `CFBundleDisplayName`; `CFBundleName` keeps the full name for the macOS menu
+bar and for App Store Connect.
+
+Still open, still not quietly assumed anywhere in this code: the free/paid
 line, the ToS and liability posture, App Store review risk for a clinical-records app, the
 iCloud-only launch excluding Windows and Android users, and the support policy for the
 inevitable lost-recovery-key tickets.

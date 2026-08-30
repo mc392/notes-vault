@@ -13,7 +13,7 @@ struct ChooseFolderView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Notes Vault")
+                    Text("GroundWork Notes")
                         .font(.largeTitle.bold())
                     Text("Clinical notes that stay yours.")
                         .font(.title3)

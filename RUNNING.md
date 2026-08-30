@@ -109,7 +109,7 @@ whether the app works at all.
 At the top of the Xcode window there is a dropdown showing the run destination. Set it to
 **My Mac**. Press the **▶ Play button** (or ⌘R).
 
-**What you should see:** the app opens showing "Notes Vault — Clinical notes that stay
+**What you should see:** the app opens showing "GroundWork Notes — Clinical notes that stay
 yours", with three explanation rows and a **Choose a folder** button.
 
 Try the whole flow: choose any empty folder on the Mac, set a passphrase, write the recovery
@@ -129,7 +129,7 @@ In Xcode's left sidebar click the blue **NotesVault** project icon at the very t
 
 Xcode will churn for a moment and create the certificates it needs. If it shows an error
 about the bundle identifier already being in use, change **Bundle Identifier** to something
-unique — for example add your initials: `com.charlottebloor.notesvault.mc`.
+unique — for example add your initials: `com.charlottebloor.groundworknotes.mc`.
 
 ### Step 8 — Connect your iPhone
 
@@ -150,7 +150,8 @@ The first build for a device takes a few minutes.
 untrusted developer. Fix it on the iPhone: Settings → General → **VPN & Device Management** →
 tap your Apple ID → **Trust**.
 
-Then open **Notes Vault** from your home screen.
+Then open **GroundWork Notes** from your home screen. iOS truncates the label, so it reads
+"GroundWork No…" under the icon.
 
 ---
 
