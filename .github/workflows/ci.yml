@@ -39,11 +39,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Printed so a version mismatch shows up as a fact in the log rather than as a
+      # puzzling error later. The first CI run failed because the runner's Xcode was older
+      # than XcodeGen's default output format, which this would have made obvious.
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+          ls -d /Applications/Xcode*.app
+
       - name: Install XcodeGen
         run: brew install xcodegen
 
       - name: Generate the project
-        run: xcodegen generate
+        run: |
+          xcodegen generate
+          xcodegen --version
 
       # Code signing is off: this proves the app compiles and links, which is the question
       # CI can answer. Signing needs a team ID and belongs on a real machine.
@@ -55,10 +66,13 @@ jobs:
             -destination 'platform=macOS' \
             CODE_SIGNING_ALLOWED=NO
 
+      # A generic destination rather than a named device: this step only builds, so it does
+      # not need a particular simulator to exist, and naming one would break every time the
+      # runner image retires a handset.
       - name: Build for iOS Simulator
         run: |
           xcodebuild build \
             -project NotesVault.xcodeproj \
             -scheme NotesVault \
-            -destination 'platform=iOS Simulator,name=iPhone 15,OS=latest' \
+            -destination 'generic/platform=iOS Simulator' \
             CODE_SIGNING_ALLOWED=NO

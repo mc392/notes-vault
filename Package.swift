@@ -23,22 +23,17 @@ let package = Package(
         // Pure logic. Deliberately has NO crypto dependency: it talks to a `CryptoEngine`
         // protocol, so vault layout, retention and the note format are all testable
         // without scrypt burning a second per test case.
-        .target(
-            name: "NotesVaultCore",
-            swiftSettings: [.swiftLanguageMode(.v5)]
-        ),
+        .target(name: "NotesVaultCore"),
         .target(
             name: "NotesVaultCrypto",
             dependencies: [
                 "NotesVaultCore",
                 .product(name: "CryptomatorCryptoLib", package: "cryptolib-swift")
-            ],
-            swiftSettings: [.swiftLanguageMode(.v5)]
+            ]
         ),
         .testTarget(
             name: "NotesVaultCoreTests",
-            dependencies: ["NotesVaultCore"],
-            swiftSettings: [.swiftLanguageMode(.v5)]
+            dependencies: ["NotesVaultCore"]
         ),
         // The core tests run against a stub engine, which proves the layout logic but says
         // nothing about whether what lands on disk is a real Cryptomator vault. These run
@@ -48,8 +43,14 @@ let package = Package(
         // an unsigned vault config.
         .testTarget(
             name: "NotesVaultCryptoTests",
-            dependencies: ["NotesVaultCore", "NotesVaultCrypto"],
-            swiftSettings: [.swiftLanguageMode(.v5)]
+            dependencies: ["NotesVaultCore", "NotesVaultCrypto"]
         )
-    ]
+    ],
+    // Swift 5 language mode, so Swift 6's strict concurrency checking does not turn this
+    // into a concurrency port before it has ever compiled once.
+    //
+    // This is the tools-5.9 spelling. The per-target `.swiftLanguageMode(.v5)` setting is a
+    // Swift 6 API and does not exist in the 5.x PackageDescription — using it made the
+    // manifest itself unparseable on Xcode 15, which is what the first CI run hit.
+    swiftLanguageVersions: [.v5]
 )
