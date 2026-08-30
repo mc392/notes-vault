@@ -160,22 +160,37 @@ failed. The first run takes about five minutes.
 
 ## Step 7 — Collect the errors
 
-Back in the terminal, run:
+This is **two** commands, and the order matters. First, find the build you want:
 
 ```
-gh run view --log-failed > ci-errors.txt
+gh run list --limit 1
 ```
 
-If it asks which run, choose the one at the top (the most recent).
+**What you should see:** one line, containing a long number like `33304076148`. That is the
+run ID. Copy it.
 
-**What this does:** saves everything that went wrong into a file called `ci-errors.txt` in
-this folder. Nothing appears on screen. That is correct.
+Now save that run's errors to a file, putting your own number where `RUN_ID` is:
 
-Open it to look:
+```
+gh run view RUN_ID --log-failed > ci-errors.txt
+```
+
+> **Why the number is needed.** Without it, `gh` tries to ask you which run you mean — but it
+> cannot ask a question when its output is being sent to a file, so it gives up and writes
+> nothing. An empty `ci-errors.txt` means you hit this, not that there were no errors.
+> Always pass the run ID.
+
+**What this does:** writes everything that went wrong into `ci-errors.txt` in this folder.
+Nothing appears on screen — that part is correct.
+
+Check it actually has something in it:
 
 ```
 notepad ci-errors.txt
 ```
+
+If Notepad opens and is completely blank, go back and re-run the two commands with the run
+ID. Do not carry on with an empty file.
 
 You will see a lot of text. Most of it does not matter. The lines that matter contain the
 word `error:` and look like this:
@@ -280,6 +295,16 @@ this step.
 
 **The Actions tab is empty** — wait a minute and refresh. If it stays empty, check that the
 folder `.github` was uploaded: run `gh browse` and look for it in the file list.
+
+**`ci-errors.txt` is empty (0 bytes)** — you left out the run ID. `gh` cannot ask you which
+run you meant while its output is going to a file, so it writes nothing. Run
+`gh run list --limit 1`, copy the long number, and use it: `gh run view NUMBER --log-failed
+> ci-errors.txt`.
+
+**A build fails in under 30 seconds** — that is too fast to be your code; nothing has even
+been compiled yet. It is almost always a setup problem, like a version mismatch between what
+the build needs and what the Mac at GitHub has. Send the log to Claude rather than looking
+for a mistake in the app.
 
 **`git push` says "rejected"** — something changed on GitHub that you do not have. Run
 `git pull --rebase` then `git push` again.
