@@ -58,8 +58,8 @@ gitignored, because a `.pbxproj` is a file nobody can review by eye and everybod
 in.
 
 The app icon is generated too. `tools/icon.py` draws it from GroundWork's own palette — the
-sage gradient, the foreground white, the brand green — and the leaf outline is the exact
-Bezier from GroundWork's `A-leaf-refined.svg` rather than a redrawing of it. The PNGs are
+brand green, the pale ruling, the paper white — and the leaf outline is the exact Bezier from
+GroundWork's `A-leaf-refined.svg` rather than a redrawing of it. The PNGs are
 committed so the app builds without Python, but they are output rather than source: change
 the palette at the top of that file and re-run it, rather than editing the images.
 
@@ -310,11 +310,17 @@ with the counsellor's insurer before launch; the constant is one field on `Reten
 
 ## Open product questions, unchanged from the handover
 
-The product name is settled: **GroundWork Notes**, decided 30 August 2026, with an icon built
-from GroundWork's own — the same sage gradient, the same leaf, a notepad where the bar chart
-was. The page is drawn rather than filled, which is the one deliberate departure: GroundWork's
-icon is solid and chunky, and this is lighter. The leaf stays solid so it keeps GroundWork's own
-treatment and still carries weight once the strokes thin out at small sizes.
+The product name is settled: **GroundWork Notes**, decided 30 August 2026, with an icon drawn
+in GroundWork's colours and carrying their leaf: a page, a green band across the top, four ruled
+lines, and the leaf stamped on the lower right. The leaf inverts GroundWork's treatment, a green body with a pale midrib, because here it
+sits on paper rather than on their sage gradient.
+
+Two things about that direction are deliberate rather than oversights. It does not carry
+GroundWork's dark sage background, so the two apps read as the same brand's rather than as an
+obvious pair; that was traded for being legible as a notes app at a glance. And the layout is a
+widespread convention rather than anyone's property, but Apple's review guideline 4.1 does
+police icons confusingly similar to their own — the green band and the leaf are what keep this
+clear of it, so they should stay doing real work if the design is ever revised.
 
 iOS truncates home-screen labels at roughly twelve characters, so the icon is labelled
 **GW Notes** via `CFBundleDisplayName`; `CFBundleName` keeps the full name for the macOS menu
