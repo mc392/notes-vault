@@ -135,18 +135,20 @@ through this". That means these all pass on real hardware, not just in the simul
 | 11 | Exported `.note` opens in TextEdit and is readable | No lock-in |
 | 12 | Vault opens in Cryptomator's own app | No lock-in, independently verified |
 
-### One decision to make before pushing
+### Repository and visibility — decided
 
-This is its own repository, deliberately separate from GroundWork's — which is public, and
-is not where a product you intend to sell should land by accident. The remaining choice is
-whether *this* repository is public or private when it reaches GitHub.
+Its own repository, deliberately separate from GroundWork's, and **public** (decided 30
+August 2026).
 
-It cuts both ways. For a zero-knowledge product, being publicly auditable is a genuine
-asset: Cryptomator itself is open source, and "read exactly what we do with your notes" is a
-stronger claim than any badge on a marketing page. Against that, it is a product with a
-paid tier to design. Either is defensible; what matters is that it is chosen. Note also that
-GitHub's macOS runners — which Stage 1 depends on — are free on public repositories and
-bill at 10× the Linux rate on private ones.
+Two things follow from that. GitHub's macOS runners are free on public repositories, which
+is what makes Stage 1 possible without owning a Mac. And the trust claim becomes checkable:
+for a product whose entire promise is that it cannot read your notes, "read the code and see
+what it does" is stronger than any badge on a marketing page — which is the same reasoning
+that makes Cryptomator open source.
+
+The repository holds no client data, no keys and no credentials, and `.gitignore` is written
+to keep it that way — `*.note`, `*.cryptomator` and exported folders can never be committed
+by accident. Anything added later that touches real notes needs the same care.
 
 ---
 
