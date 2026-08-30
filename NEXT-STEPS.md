@@ -3,6 +3,25 @@
 Last updated 30 August 2026. Written to be followed by someone who has never done this
 before. Every command is meant to be copied and pasted exactly.
 
+---
+
+> ## ✅ This is done — 30 August 2026
+>
+> The code is on GitHub at <https://github.com/mc392/notes-vault>, it compiles for Mac and
+> iPhone with no errors and no warnings, and all 73 tests pass. It took two rounds of fixes,
+> neither of which was in the app itself.
+>
+> **You do not need to follow the steps below again.** They are kept because they still
+> describe how the build-and-fix loop works, and you will use it again whenever a change
+> stops the build. Steps 6 to 10 are the loop; steps 1 to 5 were one-time setup.
+>
+> **What is next is Stage 2 in [README.md](README.md), and it needs a Mac.** The single most
+> valuable thing there: create a vault with this app, then open it with Cryptomator's own
+> app. If Cryptomator can read it, the encryption format is confirmed correct by an
+> independent implementation rather than by our own tests agreeing with themselves.
+
+---
+
 ## What you are doing today
 
 Putting the code on GitHub, so that GitHub's Mac computers can try to build it and tell you

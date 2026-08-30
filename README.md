@@ -13,29 +13,35 @@ receive anything.
 
 ## Status — read this first
 
-**The code is complete for the v1 scope. It has not been compiled or run.** This machine is
-Windows: no Swift toolchain, no Xcode, no simulator, no device. Every line here was written
-against the real published API of `cryptolib-swift` (checked against its source, not from
-memory), but "it should compile" is not "it compiles", and I am not going to pretend
-otherwise.
+**Stage 1 is complete as of 30 August 2026.** The code compiles for macOS and iOS with zero
+errors and zero warnings on Xcode 15.4, and all 73 tests pass — including the 14 that run
+real Cryptomator cryptography against a real folder on disk (25.6s of genuine scrypt, not a
+stub). [Run 33304653201.](https://github.com/mc392/notes-vault/actions/runs/33304653201)
 
-The fastest route to knowing where you stand is to push and let CI tell you — see
-**Finishing the build** below. Locally it is:
+It took two CI runs. Neither failure was in the app: the first was `Package.swift` using a
+Swift 6 API on a Swift 5 toolchain, the second was XcodeGen emitting an Xcode 16 project
+format that Xcode 15 refuses to open. Once those cleared, the app itself compiled clean
+first time.
+
+Locally, the whole core is:
 
 ```bash
 swift test
 ```
 
-73 tests over the storage format, vault layout, retention rules and the real Cryptomator
-integration, with no Xcode, no signing and no device.
-
 | Area | State |
 |---|---|
-| Note format, client records, retention rules, vault layout, index | Written, 59 tests against a stubbed engine, **not yet run** |
-| Cryptomator integration, masterkey files, recovery | Written, 14 integration tests using real cryptography on a real folder, **not yet run** |
-| Keychain, biometrics, iCloud placeholder handling | Written against the real APIs, **needs a device** |
-| SwiftUI screens | Written, **never rendered** |
-| Xcode project | Generated from `project.yml`, **never opened** |
+| Note format, client records, retention rules, vault layout, index | **59 tests passing** against a stubbed engine |
+| Cryptomator integration, masterkey files, recovery | **14 tests passing** using real cryptography on a real folder |
+| SwiftUI screens | **Compiles** for macOS and iOS — but has never been rendered |
+| Xcode project | **Builds** for both platforms, signing off |
+| Keychain, biometrics, iCloud placeholder handling | Compiles. **Behaviour untested — needs a device** |
+
+**What a green build does not prove.** No screen in this app has ever been drawn. Nobody has
+opened the document picker, seen a recovery key, or synced a note between two devices. A
+compiler checks that the code is well-formed, and the tests check that the storage and
+cryptography behave; neither has any opinion on whether the app is usable. Stages 2 and 3
+below are where that gets found out.
 
 ---
 
