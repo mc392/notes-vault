@@ -303,6 +303,41 @@ public final class AppModel: ObservableObject {
         }
     }
 
+    // MARK: - Import
+
+    /// Codes already in this vault, so the import screen can offer an existing client
+    /// rather than inventing a second code for somebody who is already here.
+    public var existingClientCodes: [ClientCode] { index.clients.map(\.code) }
+
+    /// Writes an approved import plan into the vault.
+    ///
+    /// Goes through the same serial queue as every other write, so an import cannot race
+    /// a note being saved on the other tab — and through `ImportRunner`, which uses the
+    /// ordinary `VaultStore` write path rather than one of its own.
+    public func runImport(
+        plan: ImportPlan,
+        progress: @escaping (Int, Int) -> Void
+    ) async -> ImportReport? {
+        guard let store else { return nil }
+        let existing = Set(index.clients.map(\.code))
+        var report: ImportReport?
+
+        // No busy message: the import screen shows its own progress, note by note, and a
+        // modal spinner over the top of it would hide the one thing worth watching.
+        await run(nil) { () -> ImportReport in
+            ImportRunner.run(plan: plan, store: store, existingClients: existing) { step in
+                progress(step.completed, step.total)
+            }
+        } then: { result in
+            report = result
+        }
+
+        if report != nil {
+            await refreshIndex(force: true)
+        }
+        return report
+    }
+
     // MARK: - Export
 
     /// Writes the whole vault out as plain files into a folder the user picked.

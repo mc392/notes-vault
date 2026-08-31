@@ -6,6 +6,7 @@ struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
 
     @State private var exporting = false
+    @State private var importing = false
     @State private var exportedCount: Int?
     @State private var changingPassphrase = false
     @State private var reissuingRecoveryKey = false
@@ -24,6 +25,18 @@ struct SettingsView: View {
                 Text("Vault")
             } footer: {
                 Text("Notes are read from the folder every time this app opens, so a note written on another device appears here once its sync has finished.")
+            }
+
+            Section {
+                Button {
+                    importing = true
+                } label: {
+                    Label("Import existing notes", systemImage: "square.and.arrow.down")
+                }
+            } header: {
+                Text("Import")
+            } footer: {
+                Text("Bring in notes you already keep somewhere else — Word, Excel, CSV, text, Apple Notes and more. Everything is read on this device and encrypted before it is written; your original files are left exactly where they are.")
             }
 
             Section {
@@ -100,6 +113,9 @@ struct SettingsView: View {
             }
         }
         .navigationTitle("Settings")
+        .sheet(isPresented: $importing) {
+            ImportView()
+        }
         .fileImporter(isPresented: $exporting, allowedContentTypes: [.folder]) { result in
             if case let .success(url) = result {
                 Task { exportedCount = await model.export(to: url) }

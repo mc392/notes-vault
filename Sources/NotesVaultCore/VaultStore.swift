@@ -16,6 +16,56 @@ public struct VaultIssue: Hashable, Sendable, Identifiable {
     }
 }
 
+/// What one note write put on disk.
+///
+/// `storedName` is the name that reaches iCloud — `9a1c4e2b….c9r` — as against `filename`,
+/// which is the readable name that only exists once the vault is unlocked. Showing both,
+/// side by side, is the clearest way to demonstrate what the vault does.
+public struct StoredNoteReceipt: Hashable, Sendable {
+    public let filename: String
+    public let storedName: String
+    public let plaintextBytes: Int
+    public let storedBytes: Int
+    /// The stored bytes were searched for distinctive words from the note itself, and none
+    /// of them were there.
+    public let heldNoPlaintext: Bool
+
+    public init(filename: String, storedName: String, plaintextBytes: Int, storedBytes: Int, heldNoPlaintext: Bool) {
+        self.filename = filename
+        self.storedName = storedName
+        self.plaintextBytes = plaintextBytes
+        self.storedBytes = storedBytes
+        self.heldNoPlaintext = heldNoPlaintext
+    }
+}
+
+/// Looking for a note's own words in the bytes that were written for it.
+///
+/// This is not how anyone would test a cipher, and it is not trying to be: a real cipher
+/// would fail this test even if it were leaking, because it does not leak in a way a
+/// substring search would find. What it catches is the failure that could actually happen
+/// here — a write path that forgets to go through the engine at all — and what it gives is
+/// a statement the app can make on screen, per note, from what is genuinely on the disk.
+public enum CiphertextCheck {
+    /// The words worth looking for: the longest ones, which are the ones least likely to
+    /// appear by chance in a few hundred bytes of ciphertext.
+    static func distinctiveWords(in plaintext: Data, limit: Int = 8) -> [String] {
+        guard let text = String(data: plaintext, encoding: .utf8) else { return [] }
+        let words = text
+            .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            .map(String.init)
+            .filter { $0.count >= 6 }
+        return Array(Set(words).sorted { $0.count > $1.count }.prefix(limit))
+    }
+
+    public static func holdsNoPlaintext(of plaintext: Data, in ciphertext: Data) -> Bool {
+        for word in distinctiveWords(in: plaintext) {
+            if ciphertext.range(of: Data(word.utf8)) != nil { return false }
+        }
+        return true
+    }
+}
+
 public struct IndexBuildResult: Sendable {
     public let index: VaultIndex
     public let issues: [VaultIssue]
@@ -134,6 +184,17 @@ public final class VaultStore {
     /// the name carrying the note ID rather than replacing what is there.
     @discardableResult
     public func write(note: NoteRecord) throws -> String {
+        try writeWithReceipt(note: note).filename
+    }
+
+    /// The same write, describing what actually landed on disk.
+    ///
+    /// Written for the import screen, which has to be able to show a counsellor — while
+    /// four hundred of their notes go in — the ciphertext name each one was stored under,
+    /// how many bytes it became, and that the file does not contain the words that went
+    /// into it. An app whose whole claim is "this is encrypted before it is stored" should
+    /// be able to produce the evidence rather than ask to be believed.
+    public func writeWithReceipt(note: NoteRecord) throws -> StoredNoteReceipt {
         let folderID = try ensureClient(note.client)
 
         var filename = note.preferredFilename
@@ -145,9 +206,17 @@ public final class VaultStore {
             throw VaultError.malformedNote("a note is already stored as \(filename)")
         }
 
-        let ciphertext = try layout.engine.encryptContent(note.serialised())
+        let plaintext = note.serialised()
+        let ciphertext = try layout.engine.encryptContent(plaintext)
         try files.write(ciphertext, at: path, overwrite: false)
-        return filename
+
+        return StoredNoteReceipt(
+            filename: filename,
+            storedName: path.last ?? filename,
+            plaintextBytes: plaintext.count,
+            storedBytes: ciphertext.count,
+            heldNoPlaintext: CiphertextCheck.holdsNoPlaintext(of: plaintext, in: ciphertext)
+        )
     }
 
     public func readNote(client code: ClientCode, filename: String) throws -> NoteRecord {

@@ -35,6 +35,8 @@ swift test
 | Cryptomator integration, masterkey files, recovery | **14 tests passing** using real cryptography on a real folder |
 | SwiftUI screens | **Compiles** for macOS and iOS — but has never been rendered |
 | Xcode project | **Builds** for both platforms, signing off |
+| Import: readers for Word, Excel, CSV, text, RTF, HTML, Evernote; grouping, mapping, name scan, writer | **78 tests passing**, including real `.docx` and `.xlsx` fixtures |
+| Import screens, PDF text, picking files and folders | **Compiles** for macOS and iOS. **Never rendered**, like the rest of the UI |
 | Keychain, biometrics, iCloud placeholder handling | Compiles. **Behaviour untested — needs a device** |
 
 **What a green build does not prove.** No screen in this app has ever been drawn. Nobody has
@@ -149,6 +151,8 @@ through this". That means these all pass on real hardware, not just in the simul
 | 10 | Destroy: export first, tick, type the code, three-second arm | Deliberate destruction |
 | 11 | Exported `.note` opens in TextEdit and is readable | No lock-in |
 | 12 | Vault opens in Cryptomator's own app | No lock-in, independently verified |
+| 13 | Import a folder of notes with Wi-Fi off; check the raw folder afterwards | The import claim, demonstrated the way the screen says it can be |
+| 14 | Drag notes out of Apple Notes into a folder, then import that folder | The one import route that depends on behaviour nobody here has run |
 
 ### Repository and visibility — decided
 
@@ -185,6 +189,9 @@ NotesVaultCore        pure logic, no dependencies
   VaultStore          clients, notes, corrections, index rebuild, export
   VaultIndex          the cache's shape and how it is derived
   RecoveryKey         160-bit key, Crockford Base32, CRC-16 checked
+  Import/             reading other people's files: dates, CSV, RTF, HTML, zip,
+                      .docx, .xlsx, Evernote, splitting, grouping, the name scan,
+                      the plan the counsellor confirms, and the writer
 
 NotesVaultCrypto      the platform edge
   CryptomatorEngine   VaultCryptoEngine backed by the audited library
@@ -222,6 +229,91 @@ boundary. The raw folder shows how many files exist and roughly how big they are
 nothing else.
 
 ---
+
+## Importing what you already have
+
+Nobody starts here. A counsellor arriving at this app has years of records in Word, in a
+spreadsheet, in Apple Notes, or in a folder of text files — and the honest reading of "MVP
+= sole clinical record system" is that it cannot become the sole system until what came
+before it can get in.
+
+**Settings → Import existing notes**, or the button on the empty client list.
+
+### What it reads
+
+Word (`.docx`), Excel (`.xlsx`), CSV and TSV, plain text, Markdown, rich text — including
+a note dragged out of Apple Notes or TextEdit, and `.rtfd` bundles — HTML and web-page
+exports, Evernote `.enex`, and PDFs that contain real text. A folder is walked, and the
+folder each file sits in is the default grouping, because one folder per client is how
+most people who kept files kept them.
+
+Word and Excel are zips, and reading them needs an unzip. That is `ZipArchive`, about a
+hundred lines over Apple's own `Compression` framework, rather than a package: this is the
+one code path that handles a folder of *unencrypted* clinical history, and it is the last
+place in the app where "what else does this dependency do?" should be a rhetorical
+question.
+
+Not readable, and each says so with what to do instead: older `.doc`, Pages and Numbers,
+password-protected files, and PDFs that are scans or photographs. There is no OCR and no
+camera permission with which to acquire one later, so handwriting has to be typed up.
+
+### The three things that are actually hard
+
+**A spreadsheet cannot be guessed at.** Columns are suggested from their names, and from
+the data when the names say nothing — but nothing is imported until the counsellor has
+confirmed the mapping. A column matched wrongly files one client's session in another
+client's record, which is the worst outcome this feature has available to it.
+
+**Dates.** `06/07/2026` is 6 July here and 7 June in an American export, and no file says
+which. The app reads day-first, marks every genuinely ambiguous date as ambiguous, states
+the reading on the review screen, and lets it be switched. A date it had to invent — a
+file's own modification time, because nothing inside said when — is shown in orange and
+written into the note as `imported-session-date: uncertain`, so a guess never quietly
+becomes a session date. A note with no date at all blocks the import until one is given:
+the filename, the timeline and the retention clock all key off it.
+
+**Names.** Every other part of this app is built so a name cannot get in — `ClientCode`
+will not hold one and there is nowhere to type one. Import is the one door where that
+stops being true, because the file being imported was written in Word, where "Sarah rang
+on Tuesday" is entirely normal. So: the source's own word for the client is never stored,
+only the code the counsellor picks; that code is picked per group, by hand, with any
+existing client offered first so one person's record does not end up split across two
+codes; the app offers to replace the source's words for that person with their code
+throughout the notes, showing exactly which words; and it scans for emails, phone numbers,
+postcodes, NHS numbers and dates of birth, which it flags and does not touch. Editing
+someone's clinical record on a pattern match is not this app's decision to make.
+
+### Showing the encryption rather than claiming it
+
+The point of nervousness at this moment is not misplaced: this is the largest amount of
+identifiable clinical data the app will ever handle at once. Four things answer it, and
+each is a fact rather than a reassurance.
+
+- **Nothing is uploaded, because there is nothing to upload to.** The app has no network
+  client entitlement (`project.yml`, and the checked-in `.entitlements`). Not "does not
+  make requests" — *cannot*: macOS refuses the connection at the sandbox. The import
+  screen says so, and invites the counsellor to turn Wi-Fi off first and watch it work
+  anyway.
+- **Encrypted before written, not after.** Every note goes through the same
+  `VaultStore.write` path as one typed into the editor — serialise, encrypt, write
+  ciphertext. There is no bulk path and no staging folder, so there is no second place for
+  the encryption to be got wrong and no window in which a readable copy exists in a synced
+  folder. The counsellor's files stay in memory from the moment they are picked until the
+  sheet closes.
+- **A receipt for each note.** `writeWithReceipt` returns the readable filename, the
+  `…c9r` name that actually reaches iCloud, both sizes, and the result of searching the
+  bytes just written for the note's own distinctive words. "What was written" lists all of
+  it. `CiphertextCheck` would not detect a subtle cipher flaw and does not pretend to —
+  what it catches is a write path that skipped the engine, which is the failure that could
+  really happen here.
+- **Read back, every time.** Each note is decrypted out of the vault immediately after it
+  goes in and compared with what went in. It costs one decryption per note and turns "it
+  says it saved" into "here is the note again".
+
+And the last screen is about what the app *cannot* do: the originals are still sitting
+there unencrypted, nothing has been moved or deleted on the counsellor's behalf, and
+Apple Notes will keep anything deleted for another thirty days. That step is theirs, and
+saying so plainly is worth more than a green tick.
 
 ## Decisions from the handover, and where they live
 
@@ -285,6 +377,26 @@ length of one call. `PlaintextScratch` handles it deliberately — unique direct
 file protection on iOS so the key is evicted when the device locks, contents overwritten
 before unlinking — but the honest fix is upstream: a small PR making those overloads public
 deletes that file entirely. Worth doing before launch.
+
+**The Apple Notes route is written from documentation, not from use.** The import screen
+tells the counsellor to select notes in Notes.app and drag them to a Finder folder. What
+that produces on disk — `.rtfd` bundles, `.textClipping`, something else, one file or
+several — has not been checked on a Mac, and the importer's `.rtfd` handling is written for
+the shape it is expected to be. This is the first thing to try in Stage 2, and the copy on
+that screen should be rewritten from what actually happens.
+
+**Excel dates are read by range, not by cell format.** A spreadsheet keeps `14/06/2026` as
+the number 46187, and knowing it is a date rather than a fee means reading the number
+format out of `styles.xml`. Instead, a bare number in the column the counsellor mapped as
+the date is treated as a date when it falls between 1990 and 2100. Outside a date column it
+is never guessed at, and the review screen shows the date it produced — but a workbook with
+a genuine five-figure number in its date column would be read wrongly.
+
+**Import holds plaintext in memory, and briefly on disk.** The picked files are held in
+memory for the length of the sheet, which is unavoidable and fine. The disk part is the
+existing `PlaintextScratch` limitation multiplied by the size of the import: every note
+encrypted means one scratch file. The upstream fix below removes it for imports as well as
+for typed notes, which makes it more worth doing than it was.
 
 **Name shortening is guarded, not implemented.** Cryptomator shortens ciphertext names over
 220 characters into `.c9s` directories. This app's own names (a client code plus a

@@ -7,6 +7,7 @@ struct ClientListView: View {
     @State private var addingClient = false
     @State private var newCode = ""
     @State private var newCodeProblem: String?
+    @State private var importing = false
 
     private var clients: [ClientSummary] {
         model.index.searchClients(search)
@@ -34,6 +35,13 @@ struct ClientListView: View {
                             ? "Add a client code to start. Use the same codes you already use — never a name."
                             : "No client code contains “\(search)”."
                     )
+                    if search.isEmpty {
+                        Button {
+                            importing = true
+                        } label: {
+                            Label("Import notes you already have", systemImage: "square.and.arrow.down")
+                        }
+                    }
                 }
             } else {
                 Section {
@@ -60,6 +68,9 @@ struct ClientListView: View {
                     Label("Add client", systemImage: "plus")
                 }
             }
+        }
+        .sheet(isPresented: $importing) {
+            ImportView()
         }
         .alert("New client", isPresented: $addingClient) {
             TextField("Code, e.g. SM2", text: $newCode)
