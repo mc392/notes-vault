@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  Apple requires this file for any app touching a "required reason" API, and
+	  rejects uploads without it (ITMS-91053). Hand-written and committed rather
+	  than generated from project.yml, because XcodeGen has no notion of it and a
+	  privacy declaration should be reviewable as itself.
+
+	  The interesting part is what is empty. This app collects nothing, tracks
+	  nothing, and contacts nothing — that is the entire product claim, and this
+	  is the one place Apple asks it to be stated formally.
+	-->
+
+	<!-- No tracking, and so no tracking domains to declare. -->
+	<key>NSPrivacyTracking</key>
+	<false/>
+	<key>NSPrivacyTrackingDomains</key>
+	<array/>
+
+	<!--
+	  Deliberately empty. Notes never leave the device unencrypted, there is no
+	  account, no analytics and no crash reporter, so there is no category of
+	  collected data to declare. If this array ever needs an entry, something has
+	  been added that contradicts the product.
+	-->
+	<key>NSPrivacyCollectedDataTypes</key>
+	<array/>
+
+	<key>NSPrivacyAccessedAPITypes</key>
+	<array>
+		<dict>
+			<!--
+			  UserDefaults holds the retention policy, the note-field setup and the
+			  security-scoped bookmark pointing at the vault folder. All of it is
+			  this app's own, read back only by this app, which is what CA92.1
+			  covers. No client data is ever written here.
+			-->
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>CA92.1</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

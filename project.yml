@@ -36,6 +36,11 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.charlottebloor.groundworknotes
+        # The Apple Developer Program team this app is signed by. Not a secret — it
+        # ships inside every build — but it must match the account Xcode is signed
+        # into, or signing fails with "no profiles found".
+        DEVELOPMENT_TEAM: L8B6623MNM
+        CODE_SIGN_STYLE: Automatic
         PRODUCT_NAME: GroundWork Notes
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
@@ -44,6 +49,14 @@ targets:
         ENABLE_HARDENED_RUNTIME: YES
         SWIFT_TREAT_WARNINGS_AS_ERRORS: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # The entitlements below are macOS App Sandbox concepts. iOS sandboxes every
+        # app implicitly and no iOS provisioning profile carries them, so requesting
+        # them on iOS fails signing outright — "provisioning profile doesn't include
+        # the com.apple.security.app-sandbox entitlement" — which blocks both device
+        # builds and TestFlight. Blank the file for the iOS SDKs so the entitlements
+        # stay declared once, in one place, and apply only where they mean something.
+        "CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]": ""
+        "CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]": ""
         # No usage descriptions for camera, photos, microphone or contacts, because the app
         # asks for none of them. v1 is typed notes only (decision 03).
     info:
