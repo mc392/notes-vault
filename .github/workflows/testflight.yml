@@ -1,0 +1,143 @@
+name: TestFlight
+
+# CI (ci.yml) proves the app compiles and its tests pass on every push. This is the other
+# thing — it signs a real build and sends it to App Store Connect — and it runs only when
+# you tag a release or start it by hand, because a build reaching testers should be a
+# decision rather than a side effect of pushing.
+#
+# Setup and the manual fallback: docs/releasing.md.
+
+on:
+  push:
+    tags: ["notes-v*"]
+  workflow_dispatch:
+    inputs:
+      build_number:
+        description: "Build number to use (leave blank to use the run number)"
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: testflight
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    name: Build and upload to TestFlight
+    runs-on: macos-14
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The tests are the gate. This app's whole claim is that what lands on disk is a
+      # genuine Cryptomator vault, and the crypto tests are the only thing asserting it —
+      # so nothing ships without them, however slow real scrypt is.
+      - name: Test
+        run: swift test
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate the project
+        run: xcodegen generate
+
+      - name: Write the App Store Connect API key
+        env:
+          KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+        run: |
+          if [ -z "$KEY_ID" ] || [ -z "$PRIVATE_KEY" ]; then
+            echo "::error::App Store Connect secrets are missing — see docs/releasing.md."
+            exit 1
+          fi
+          mkdir -p ~/private_keys
+          echo "$PRIVATE_KEY" > ~/private_keys/AuthKey_$KEY_ID.p8
+
+      # A tag carries its own build number (notes-v0.1.0-b3); a manual run takes the input
+      # and otherwise falls back to the run number, which only ever increases — so a
+      # hand-started build cannot collide with one Apple has already accepted.
+      - name: Decide the build number
+        id: build
+        run: |
+          if [ -n "${{ github.event.inputs.build_number }}" ]; then
+            echo "number=${{ github.event.inputs.build_number }}" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.ref_name }}" =~ -b([0-9]+)$ ]]; then
+            echo "number=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+          else
+            echo "number=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Archive
+        env:
+          KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+        run: |
+          xcodebuild archive \
+            -project NotesVault.xcodeproj \
+            -scheme NotesVault \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/GroundWorkNotes.xcarchive" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath ~/private_keys/AuthKey_$KEY_ID.p8 \
+            -authenticationKeyID "$KEY_ID" \
+            -authenticationKeyIssuerID "$ISSUER_ID" \
+            CURRENT_PROJECT_VERSION=${{ steps.build.outputs.number }}
+
+      - name: Export the archive
+        env:
+          KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+        run: |
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>export</string>
+            <key>teamID</key><string>L8B6623MNM</string>
+            <key>uploadSymbols</key><true/>
+          </dict>
+          </plist>
+          PLIST
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/GroundWorkNotes.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath ~/private_keys/AuthKey_$KEY_ID.p8 \
+            -authenticationKeyID "$KEY_ID" \
+            -authenticationKeyIssuerID "$ISSUER_ID"
+
+      - name: Upload to App Store Connect
+        env:
+          KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+        run: |
+          IPA=$(find "$RUNNER_TEMP/export" -name '*.ipa' | head -1)
+          echo "Uploading $IPA"
+          xcrun altool --upload-app -f "$IPA" -t ios \
+            --apiKey "$KEY_ID" --apiIssuer "$ISSUER_ID"
+
+      - name: Keep the archive
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GroundWorkNotes-build-${{ steps.build.outputs.number }}
+          path: |
+            ${{ runner.temp }}/export/*.ipa
+            ${{ runner.temp }}/GroundWorkNotes.xcarchive/dSYMs
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: What happens next
+        run: |
+          echo "### Build ${{ steps.build.outputs.number }} uploaded" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Processing takes ~5-15 minutes, then it appears in TestFlight." >> $GITHUB_STEP_SUMMARY
+          echo "This app uses Cryptomator's cryptography — answer the export-compliance" >> $GITHUB_STEP_SUMMARY
+          echo "question in App Store Connect on the first upload. See docs/releasing.md." >> $GITHUB_STEP_SUMMARY
