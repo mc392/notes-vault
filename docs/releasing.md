@@ -1,6 +1,28 @@
 # Releasing GroundWork Notes
 
-Two pipelines, and only one of them runs on its own:
+## First: pick one delivery route, not two
+
+There are now two ways to get a build to TestFlight, and **only one should be switched
+on**. Both uploading at once means two builds racing for the same build number, and Apple
+rejects the loser — a confusing failure that looks like a signing problem.
+
+| | Xcode Cloud | GitHub Actions (`testflight.yml`) |
+|---|---|---|
+| Set up | in Xcode / App Store Connect; `ci_scripts/ci_post_clone.sh` runs `xcodegen` because the project file is gitignored | three repository secrets, all in the repo |
+| Signing | handled by Apple, nothing to store | an App Store Connect API key you create |
+| Cost | 25 compute hours/month free, then paid | free — GitHub's macOS runners are free on public repos, and this one is public |
+| Lives where | mostly in Apple's UI, invisible to the repo | entirely in the repo, reviewable in a diff |
+
+**Xcode Cloud is already part-configured** (that is what `ci_scripts/ci_post_clone.sh` is
+for). If you finish that, delete `.github/workflows/testflight.yml` and ignore the rest of
+this page's automation section — the manual and compliance notes still apply.
+
+`testflight.yml` is the alternative, and is **dormant** until you either push a `notes-v*`
+tag or start it by hand, so leaving it in place while you decide is safe.
+
+---
+
+Whichever you choose, note that CI and delivery are different things:
 
 | | What runs | When |
 |---|---|---|
