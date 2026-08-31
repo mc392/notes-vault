@@ -38,4 +38,9 @@ first. Model sessions can fix whatever those runs surface.
 Notes app isn't in a directory called `GroundWork` while the tracker is in
 `therapy-tracker` (affects remotes/CI — do by hand, not via a session).
 
-- [ ] N1 · [ ] N2 · [ ] N3 · [ ] N4 · [ ] N5 · [ ] Stage 2 hardware run
+- [x] N1 · [x] N2 · [x] N3 · [x] N4 · [ ] N5 · [ ] Stage 2 hardware run
+
+**N1–N4 shipped (Aug 2026).** N5 (the upstream cryptolib-swift PR to retire the plaintext
+scratch file) remains open, and Stage 2 on real hardware is still the release gate.
+Also delivered outside this plan: session-schedule sync with GroundWork via a shared
+roster file — see `docs/schedule-sync.md`.
