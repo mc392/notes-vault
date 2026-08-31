@@ -56,14 +56,23 @@ final class ImportModel: ObservableObject {
     private var files: [ImportFile] = []
     private var existingClients: [ClientCode] = []
     private var existingNotes: [NoteIndexEntry] = []
+    /// The fields this device has, so metadata found in the notes can be matched against
+    /// them. Kept in step with `AppModel.noteFields` as the counsellor adds fields here.
+    private var noteFields = NoteFieldSettings.default
 
     var hasFiles: Bool { !files.isEmpty }
 
     // MARK: - Reading
 
-    func load(urls: [URL], existingClients: [ClientCode], existingNotes: [NoteIndexEntry]) async {
+    func load(
+        urls: [URL],
+        existingClients: [ClientCode],
+        existingNotes: [NoteIndexEntry],
+        noteFields: NoteFieldSettings
+    ) async {
         self.existingClients = existingClients
         self.existingNotes = existingNotes
+        self.noteFields = noteFields
         stage = .reading
 
         let maximum = options.maximumFileBytes
@@ -184,12 +193,21 @@ final class ImportModel: ObservableObject {
         // away decisions the counsellor has already made. Forty groups is a long way to
         // get through twice.
         let decided = Dictionary(plan.groups.map { ($0.key, $0) }, uniquingKeysWith: { first, _ in first })
-        var built = ImportPlan.make(results: results, existingClients: existingClients, options: options)
+        let fieldDecisions = plan.fieldDecisions
+        var built = ImportPlan.make(
+            results: results,
+            existingClients: existingClients,
+            noteFields: noteFields,
+            options: options
+        )
         for index in built.groups.indices {
             guard let previous = decided[built.groups[index].key] else { continue }
             built.groups[index].assignedCode = previous.assignedCode
             built.groups[index].isSkipped = previous.isSkipped
             built.groups[index].replaceNamesInBodies = previous.replaceNamesInBodies
+        }
+        for (key, decision) in fieldDecisions where built.fieldCandidates.contains(where: { $0.key == key }) {
+            built.fieldDecisions[key] = decision
         }
         built.issues.append(contentsOf: extraIssues)
         plan = built
@@ -257,6 +275,44 @@ final class ImportModel: ObservableObject {
     func remove(_ item: ImportedItem) {
         plan.removeItem(item.id)
         refreshClashes()
+    }
+
+    // MARK: - Metadata found in the notes
+
+    func setFieldDecision(_ decision: ImportFieldDecision, for candidate: ImportFieldCandidate) {
+        plan.setFieldDecision(decision, forKey: candidate.key)
+    }
+
+    /// Adds a field this device has never had, and stores the metadata in it.
+    ///
+    /// The field is a device setting like any other, so this is the same change the
+    /// counsellor could make in Settings — made here because here is where they found out
+    /// they wanted it.
+    func addField(for candidate: ImportFieldCandidate, kind: NoteFieldKind, using model: AppModel) {
+        do {
+            let field = try model.noteFields.addCustomField(label: candidate.label, kind: kind)
+            noteFields = model.noteFields
+            setFieldDecision(.store(fieldKey: field.key), for: candidate)
+        } catch {
+            errorMessage = (error as? VaultError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+
+    /// Switches on a field that already exists but has never been turned on.
+    func enableField(for candidate: ImportFieldCandidate, using model: AppModel) {
+        guard let key = candidate.matchingFieldKey else { return }
+        model.noteFields.setEnabled(true, forKey: key)
+        noteFields = model.noteFields
+        setFieldDecision(.store(fieldKey: key), for: candidate)
+    }
+
+    /// How the decision for one candidate reads on screen.
+    func decisionSummary(for candidate: ImportFieldCandidate) -> String {
+        guard case let .store(fieldKey)? = plan.fieldDecisions[candidate.key] else {
+            return "Left in the note"
+        }
+        let label = noteFields.fields.first { $0.key == fieldKey }?.label ?? fieldKey
+        return "Stored as “\(label)”"
     }
 
     /// Everything the counsellor's own files call this person — shown so they can see

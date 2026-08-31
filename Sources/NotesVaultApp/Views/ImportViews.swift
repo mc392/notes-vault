@@ -142,7 +142,8 @@ private struct ImportStartView: View {
                 await importer.load(
                     urls: urls,
                     existingClients: model.existingClientCodes,
-                    existingNotes: model.index.notes
+                    existingNotes: model.index.notes,
+                    noteFields: model.noteFields
                 )
             }
         case let .failure(error):
@@ -187,12 +188,17 @@ private struct FormatList: View {
 private struct AppleNotesGuide: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Apple Notes has no bulk export, so there are two routes — both on a Mac:")
+            Text("On a Mac, in Notes:")
                 .font(.footnote)
-            Label("Select the notes for one client in Notes, drag them onto a folder in Finder, then choose that folder here. Each note arrives as its own file.", systemImage: "1.circle")
+            Label("Make a folder in Finder for one client.", systemImage: "1.circle")
                 .font(.footnote)
-            Label("Or open a note, select all, copy, and paste into a new TextEdit document — one document per client, with a date at the start of each session.", systemImage: "2.circle")
+            Label("Select that client's notes in Notes, then export them as Markdown into that folder — one .md file per note.", systemImage: "2.circle")
                 .font(.footnote)
+            Label("Repeat for each client, then choose the folder holding all of them here.", systemImage: "3.circle")
+                .font(.footnote)
+            Text("Dragging notes out of Notes into Finder does not work — it does not leave files behind that can be read. Export as Markdown is the route.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
             Text("Afterwards, remember Notes keeps deleted notes in Recently Deleted for 30 days. Empty it once you are satisfied the import is right.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
@@ -352,6 +358,18 @@ private struct ImportReviewView: View {
                 }
             }
 
+            if !importer.plan.fieldCandidates.isEmpty {
+                Section {
+                    ForEach(importer.plan.fieldCandidates) { candidate in
+                        ImportFieldRow(importer: importer, candidate: candidate)
+                    }
+                } header: {
+                    Text("Details written above the notes")
+                } footer: {
+                    Text("Your notes start with lines like “Session number: 4”. Stored as a field, that value gets its own place on the note screen and can be read back on any device. Left alone, it stays in the note exactly as you wrote it — which is the default for anything this app has no field for.")
+                }
+            }
+
             Section {
                 ForEach(importer.plan.groups) { group in
                     NavigationLink {
@@ -395,6 +413,61 @@ private struct ImportReviewView: View {
                 }
             }
         }
+    }
+}
+
+/// One kind of metadata found across the import, and what to do with it.
+private struct ImportFieldRow: View {
+    @EnvironmentObject private var model: AppModel
+    @ObservedObject var importer: ImportModel
+    let candidate: ImportFieldCandidate
+
+    private var isStored: Bool {
+        if case .store? = importer.plan.fieldDecisions[candidate.key] { return true }
+        return false
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(candidate.label).font(.subheadline.weight(.semibold))
+                Spacer()
+                Text(importer.decisionSummary(for: candidate))
+                    .font(.caption)
+                    .foregroundStyle(isStored ? Color.accentColor : Color.secondary)
+            }
+            Text("In \(candidate.occurrences) note\(candidate.occurrences == 1 ? "" : "s") · \(candidate.examples.joined(separator: ", "))")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+
+            Menu("Change") {
+                if let key = candidate.matchingFieldKey, let label = candidate.matchingFieldLabel {
+                    if candidate.matchingFieldIsEnabled {
+                        Button("Store as “\(label)”") {
+                            importer.setFieldDecision(.store(fieldKey: key), for: candidate)
+                        }
+                    } else {
+                        Button("Turn on “\(label)” and store it there") {
+                            importer.enableField(for: candidate, using: model)
+                        }
+                    }
+                } else {
+                    Button("Add a field called “\(candidate.label)” (\(candidate.suggestedKind.displayName))") {
+                        importer.addField(for: candidate, kind: candidate.suggestedKind, using: model)
+                    }
+                    Button("Add it as \(candidate.suggestedKind == .number ? "Text" : "a Number") instead") {
+                        importer.addField(for: candidate, kind: candidate.suggestedKind == .number ? .text : .number, using: model)
+                    }
+                }
+                Divider()
+                Button("Leave it in the note") {
+                    importer.setFieldDecision(.leaveInNote, for: candidate)
+                }
+            }
+            .font(.footnote)
+        }
+        .padding(.vertical, 2)
     }
 }
 

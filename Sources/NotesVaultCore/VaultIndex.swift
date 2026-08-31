@@ -49,6 +49,12 @@ public struct ClientSummary: Codable, Hashable, Sendable, Identifiable {
     /// Notes that have been superseded by a correction. Counted separately so a client
     /// showing "12 notes" means twelve sessions, not twelve files.
     public let supersededCount: Int
+    /// How often this client is seen, from their metadata log. Absent until GroundWork's
+    /// schedules are synced in, or a cadence is set here by hand.
+    public let schedule: SessionSchedule?
+    /// When the work began, as GroundWork knows it. Only used to anchor predictions for a
+    /// client with no notes yet.
+    public let seriesStart: Date?
 
     public init(
         code: ClientCode,
@@ -57,7 +63,9 @@ public struct ClientSummary: Codable, Hashable, Sendable, Identifiable {
         firstContact: Date?,
         lastContact: Date?,
         noteCount: Int,
-        supersededCount: Int
+        supersededCount: Int,
+        schedule: SessionSchedule? = nil,
+        seriesStart: Date? = nil
     ) {
         self.code = code
         self.status = status
@@ -66,6 +74,8 @@ public struct ClientSummary: Codable, Hashable, Sendable, Identifiable {
         self.lastContact = lastContact
         self.noteCount = noteCount
         self.supersededCount = supersededCount
+        self.schedule = schedule
+        self.seriesStart = seriesStart
     }
 }
 
@@ -77,7 +87,10 @@ public struct ClientSummary: Codable, Hashable, Sendable, Identifiable {
 /// carries on. Nothing is ever read from here that has not also been written to a vault
 /// file first.
 public struct VaultIndex: Codable, Sendable {
-    public static let formatVersion = 1
+    /// 2 added `schedule` and `seriesStart` to `ClientSummary`. `IndexStore.load` discards
+    /// a cache whose version does not match, so an older one is rebuilt from the vault
+    /// rather than decoded with those fields silently missing.
+    public static let formatVersion = 2
 
     public var version: Int
     public var builtAt: Date
@@ -175,7 +188,9 @@ public struct VaultIndex: Codable, Sendable {
                 firstContact: current.map(\.session).min() ?? mine.map(\.session).min(),
                 lastContact: lastContact,
                 noteCount: current.count,
-                supersededCount: mine.count - current.count
+                supersededCount: mine.count - current.count,
+                schedule: event?.schedule,
+                seriesStart: event?.seriesStart
             )
         }
 

@@ -9,7 +9,7 @@ import Foundation
 /// `U` is excluded so that no accidental obscenity appears in a key the user has to read
 /// aloud to support.
 public enum CrockfordBase32 {
-    static let alphabet = Array("0123456789ABCDEFGHJKMNPQRSTVWXYZ")
+    public static let alphabet = Array("0123456789ABCDEFGHJKMNPQRSTVWXYZ")
 
     /// Big-endian, 5 bits per character, no padding.
     public static func encode(_ bytes: [UInt8]) -> String {

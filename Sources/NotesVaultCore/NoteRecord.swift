@@ -222,7 +222,7 @@ public struct NoteRecord: Identifiable, Hashable, Sendable {
 
     // MARK: - Filenames
 
-    /// `2026-06-14T0930-iphone.note`
+    /// `2026-06-14T0930-iphone-k3m.note`
     ///
     /// Readable in the decrypted view, and carrying the device so the same client written
     /// up on a Mac and an iPhone in the same minute produces two files rather than one

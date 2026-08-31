@@ -59,11 +59,34 @@ public enum KeychainStore {
         write(Data(passphrase.utf8), purpose: .passphrase, vaultID: vaultID, requiresBiometrics: true)
     }
 
+    /// The outcome of asking the keychain for the biometric-wrapped passphrase: the value
+    /// itself, a normal decline, or nothing usable being there any more.
+    public enum PassphraseResult: Equatable {
+        case value(String)
+        case cancelled
+        case unavailable
+    }
+
+    /// Maps the raw `OSStatus` from `SecItemCopyMatching` to what the caller should do about
+    /// it. Pulled out as a pure function so the mapping is testable without a real keychain
+    /// or a device to prompt Face ID on.
+    static func passphraseResult(for status: OSStatus) -> PassphraseResult {
+        switch status {
+        case errSecUserCanceled, errSecAuthFailed:
+            // `errSecAuthFailed` also covers a cancel-like interaction (e.g. dismissing the
+            // sheet rather than tapping Cancel) — declining is a normal choice either way.
+            return .cancelled
+        default:
+            return .unavailable
+        }
+    }
+
     /// Prompts for Face ID / Touch ID and returns the stored passphrase.
     ///
-    /// Returns nil rather than throwing when the user cancels — declining to use biometrics
-    /// is a normal choice, not an error, and the passphrase field is still right there.
-    public static func passphrase(vaultID: String, reason: String) -> String? {
+    /// Distinguishes the user declining — a normal choice, not an error, and the passphrase
+    /// field is still right there — from the item having gone or the keychain refusing for
+    /// some other reason, which the caller needs to know about to stop offering the button.
+    public static func passphrase(vaultID: String, reason: String) -> PassphraseResult {
         let context = LAContext()
         context.localizedReason = reason
 
@@ -73,9 +96,12 @@ public enum KeychainStore {
         query[kSecUseAuthenticationContext as String] = context
 
         var item: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
-              let data = item as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        guard status == errSecSuccess else { return passphraseResult(for: status) }
+        guard let data = item as? Data, let value = String(data: data, encoding: .utf8) else {
+            return .unavailable
+        }
+        return .value(value)
     }
 
     public static func hasStoredPassphrase(vaultID: String) -> Bool {

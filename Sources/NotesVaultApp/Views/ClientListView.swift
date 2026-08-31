@@ -49,7 +49,11 @@ struct ClientListView: View {
                         NavigationLink {
                             ClientDetailView(code: client.code)
                         } label: {
-                            ClientRow(client: client, policy: model.retentionPolicy)
+                            ClientRow(
+                                client: client,
+                                policy: model.retentionPolicy,
+                                awaiting: model.predictedSessions(for: client.code).count
+                            )
                         }
                     }
                 }
@@ -98,6 +102,9 @@ struct ClientListView: View {
 struct ClientRow: View {
     let client: ClientSummary
     let policy: RetentionPolicy
+    /// Sessions their cadence says have happened with no note against them. Zero for a
+    /// client with no schedule, which is every client until GroundWork's are synced in.
+    var awaiting: Int = 0
 
     private var assessment: RetentionAssessment {
         RetentionEngine.assess(
@@ -127,6 +134,10 @@ struct ClientRow: View {
                 }
                 if client.supersededCount > 0 {
                     Text("\(client.supersededCount) corrected")
+                }
+                if awaiting > 0 {
+                    Text("\(awaiting) to write up")
+                        .foregroundStyle(.orange)
                 }
             }
             .font(.caption)

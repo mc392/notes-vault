@@ -101,6 +101,14 @@ public struct ClientMetadataEvent: Identifiable, Hashable, Sendable {
     /// Set when the counsellor wants the retention clock to run from a date other than the
     /// last note — a final contact that produced no written record, typically.
     public let lastContactOverride: Date?
+    /// How often this client is seen, and when. Slow-moving by nature — it is set once when
+    /// the work starts and changed on the rare occasion a slot moves — which is what makes
+    /// it safe to keep here rather than syncing a list of outstanding sessions from
+    /// GroundWork. See `docs/schedule-sync.md`.
+    public let schedule: SessionSchedule?
+    /// When the work began, as GroundWork knows it. Only ever used as the anchor for
+    /// predicting sessions for a client whose first note has not been written yet.
+    public let seriesStart: Date?
     public let extraHeaders: [String: String]
 
     public init(
@@ -111,6 +119,8 @@ public struct ClientMetadataEvent: Identifiable, Hashable, Sendable {
         status: ClientStatus,
         retentionBasis: RetentionBasis = .adult,
         lastContactOverride: Date? = nil,
+        schedule: SessionSchedule? = nil,
+        seriesStart: Date? = nil,
         extraHeaders: [String: String] = [:]
     ) {
         self.id = id
@@ -120,6 +130,8 @@ public struct ClientMetadataEvent: Identifiable, Hashable, Sendable {
         self.status = status
         self.retentionBasis = retentionBasis
         self.lastContactOverride = lastContactOverride
+        self.schedule = schedule
+        self.seriesStart = seriesStart
         self.extraHeaders = extraHeaders
     }
 
@@ -134,6 +146,18 @@ public struct ClientMetadataEvent: Identifiable, Hashable, Sendable {
         lines.append("retention: \(retentionBasis.encodedString)")
         if let lastContactOverride {
             lines.append("last-contact: \(VaultDate.utcString(lastContactOverride))")
+        }
+        if let schedule {
+            lines.append("cadence-days: \(schedule.cadenceDays)")
+            if let usualDay = schedule.usualDay {
+                lines.append("usual-day: \(usualDay.rawValue)")
+            }
+            if let usualTime = schedule.usualTime {
+                lines.append("usual-time: \(usualTime)")
+            }
+        }
+        if let seriesStart {
+            lines.append("series-start: \(VaultDate.utcString(seriesStart))")
         }
         for key in extraHeaders.keys.sorted() {
             lines.append("\(key): \(extraHeaders[key] ?? "")")
@@ -184,7 +208,22 @@ public struct ClientMetadataEvent: Identifiable, Hashable, Sendable {
         let status = ClientStatus(rawValue: try required("status")) ?? .active
         let retention = try RetentionBasis(encoded: headers["retention"] ?? "adult")
 
-        let known: Set<String> = ["id", "client", "written", "device", "status", "retention", "last-contact"]
+        // A cadence we cannot read drops the whole schedule rather than defaulting to
+        // weekly. A wrong cadence would put confident, wrong dates in front of the
+        // counsellor; a missing one just offers nothing, which is visibly nothing.
+        var schedule: SessionSchedule?
+        if let cadenceRaw = headers["cadence-days"], let cadenceDays = Int(cadenceRaw), cadenceDays > 0 {
+            schedule = SessionSchedule(
+                cadenceDays: cadenceDays,
+                usualDay: headers["usual-day"].flatMap { Weekday(rawValue: $0.lowercased()) },
+                usualTime: headers["usual-time"].flatMap { TimeOfDay($0) }
+            )
+        }
+
+        let known: Set<String> = [
+            "id", "client", "written", "device", "status", "retention", "last-contact",
+            "cadence-days", "usual-day", "usual-time", "series-start"
+        ]
 
         return ClientMetadataEvent(
             id: try NoteID(try required("id")),
@@ -194,6 +233,8 @@ public struct ClientMetadataEvent: Identifiable, Hashable, Sendable {
             status: status,
             retentionBasis: retention,
             lastContactOverride: headers["last-contact"].flatMap { VaultDate.parse($0) },
+            schedule: schedule,
+            seriesStart: headers["series-start"].flatMap { VaultDate.parse($0) },
             extraHeaders: headers.filter { !known.contains($0.key) }
         )
     }

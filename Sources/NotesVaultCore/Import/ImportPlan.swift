@@ -113,17 +113,33 @@ public struct ImportPlan: Sendable {
     /// Notes that were the same note twice — the same folder dragged in alongside a zip of
     /// itself, which is a very easy mistake to make and an unpleasant one to unpick after.
     public let duplicatesCollapsed: Int
+    /// The `Label: value` metadata found at the top of the notes — session numbers,
+    /// durations, room names — and what this device already knows about each.
+    public let fieldCandidates: [ImportFieldCandidate]
+    /// What to do with each of them, keyed by the label's key. Anything absent is left in
+    /// the note.
+    public var fieldDecisions: [String: ImportFieldDecision]
 
-    public init(groups: [ImportGroup], issues: [VaultIssue], options: ImportOptions, duplicatesCollapsed: Int = 0) {
+    public init(
+        groups: [ImportGroup],
+        issues: [VaultIssue],
+        options: ImportOptions,
+        duplicatesCollapsed: Int = 0,
+        fieldCandidates: [ImportFieldCandidate] = [],
+        fieldDecisions: [String: ImportFieldDecision] = [:]
+    ) {
         self.groups = groups
         self.issues = issues
         self.options = options
         self.duplicatesCollapsed = duplicatesCollapsed
+        self.fieldCandidates = fieldCandidates
+        self.fieldDecisions = fieldDecisions
     }
 
     public static func make(
         results: [ImportFileResult],
         existingClients: [ClientCode],
+        noteFields: NoteFieldSettings = .default,
         options: ImportOptions = .default
     ) -> ImportPlan {
         var issues = results.flatMap(\.issues)
@@ -165,7 +181,41 @@ public struct ImportPlan: Sendable {
             )
         }
 
-        return ImportPlan(groups: groups, issues: issues, options: options, duplicatesCollapsed: duplicates)
+        let candidates = ImportFieldCandidate.gather(
+            from: groups.flatMap(\.items),
+            noteFields: noteFields
+        )
+        // A field this device already has *and* has switched on is matched without being
+        // asked: the counsellor set that field up precisely so a session number would go
+        // there. Everything else defaults to leaving the note alone.
+        var decisions: [String: ImportFieldDecision] = [:]
+        for candidate in candidates {
+            if let key = candidate.matchingFieldKey, candidate.matchingFieldIsEnabled {
+                decisions[candidate.key] = .store(fieldKey: key)
+            }
+        }
+
+        return ImportPlan(
+            groups: groups,
+            issues: issues,
+            options: options,
+            duplicatesCollapsed: duplicates,
+            fieldCandidates: candidates,
+            fieldDecisions: decisions
+        )
+    }
+
+    /// Label key → field key, for the metadata the counsellor has chosen to store.
+    public var acceptedFields: [String: String] {
+        var accepted: [String: String] = [:]
+        for (labelKey, decision) in fieldDecisions {
+            if case let .store(fieldKey) = decision { accepted[labelKey] = fieldKey }
+        }
+        return accepted
+    }
+
+    public mutating func setFieldDecision(_ decision: ImportFieldDecision, forKey key: String) {
+        fieldDecisions[key] = decision
     }
 
     // MARK: - Readiness

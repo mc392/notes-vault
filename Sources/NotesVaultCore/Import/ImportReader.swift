@@ -306,7 +306,15 @@ public enum ImportReader {
                 ),
                 sourceTitle: sections.count > 1 ? (section.heading ?? title) : title,
                 groupKey: group,
-                date: resolveDate(section.date, file: file),
+                date: resolveDate(
+                    section.date,
+                    // Only for a whole-file note: a date in the filename cannot be the
+                    // date of the third entry inside it.
+                    titled: sections.count == 1 ? title : nil,
+                    file: file,
+                    options: options,
+                    now: now
+                ),
                 body: section.text
             )
         }
@@ -354,8 +362,25 @@ public enum ImportReader {
         return ImportFileResult(file: file.name, format: .evernote, items: items, table: nil, issues: issues)
     }
 
-    private static func resolveDate(_ parsed: ParsedDate?, file: ImportFile) -> ImportedDate {
+    /// The session date, in the order the source is likely to be right about it.
+    ///
+    /// The filename matters more than it looks. A folder of notes exported from Apple
+    /// Notes is named after each note's title, and a counsellor's note titles are very
+    /// often the date — while the file's own timestamp is the moment they ran the export,
+    /// which is not a session date at all and would put five years of work on one
+    /// afternoon.
+    private static func resolveDate(
+        _ parsed: ParsedDate?,
+        titled title: String?,
+        file: ImportFile,
+        options: ImportOptions,
+        now: Date
+    ) -> ImportedDate {
         if let parsed { return .found(parsed.date, raw: parsed.raw) }
+        if let title,
+           let fromName = ImportDates.first(in: title, dayFirst: options.dayFirst, timeZone: options.timeZone, now: now) {
+            return .found(fromName.date, raw: "\(fromName.raw) — from the file's name")
+        }
         if let modified = file.modified { return .fromFile(modified) }
         return .unknown
     }

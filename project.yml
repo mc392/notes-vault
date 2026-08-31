@@ -68,11 +68,12 @@ targets:
         CFBundleDisplayName: GW Notes
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
-        LSApplicationCategoryType: public.app-category.medical
+        LSApplicationCategoryType: public.app-category.business
         UILaunchScreen:
           UIColorName: ""
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         # Required before LocalAuthentication will prompt at all on iOS. Without it the

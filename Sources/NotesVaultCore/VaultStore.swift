@@ -287,6 +287,28 @@ public final class VaultStore {
         return ClientMetadataEvent.fold(events)
     }
 
+    /// The folded current metadata for every client in the vault, in one walk.
+    ///
+    /// `currentMetadata(for:)` in a loop would re-list and re-decrypt each client's folder
+    /// per call; the schedule sync needs all of it at once to work out what has actually
+    /// changed, and a vault of a few hundred clients should not pay for that twice.
+    public func allCurrentMetadata() throws -> (events: [ClientCode: ClientMetadataEvent], issues: [VaultIssue]) {
+        let listing = try listClientCodes()
+        var events: [ClientCode: ClientMetadataEvent] = [:]
+        var issues = listing.issues
+
+        for code in listing.codes {
+            do {
+                if let folded = try currentMetadata(for: code) {
+                    events[code] = folded
+                }
+            } catch {
+                issues.append(VaultIssue(location: code.rawValue, message: error.localizedDescription))
+            }
+        }
+        return (events, issues)
+    }
+
     // MARK: - Index
 
     /// Walks the whole vault and rebuilds the index from what is actually stored.

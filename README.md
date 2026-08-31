@@ -35,7 +35,8 @@ swift test
 | Cryptomator integration, masterkey files, recovery | **14 tests passing** using real cryptography on a real folder |
 | SwiftUI screens | **Compiles** for macOS and iOS — but has never been rendered |
 | Xcode project | **Builds** for both platforms, signing off |
-| Import: readers for Word, Excel, CSV, text, RTF, HTML, Evernote; grouping, mapping, name scan, writer | **78 tests passing**, including real `.docx` and `.xlsx` fixtures |
+| Import: readers for Word, Excel, CSV, text, RTF, HTML, Evernote; grouping, mapping, name scan, metadata fields, writer | **93 tests passing**, including real `.docx` and `.xlsx` fixtures |
+| Session schedules: predicting what needs writing up, the roster file, planning a sync | **39 tests passing**, fourteen of them cross-checked against GroundWork's own implementation |
 | Import screens, PDF text, picking files and folders | **Compiles** for macOS and iOS. **Never rendered**, like the rest of the UI |
 | Keychain, biometrics, iCloud placeholder handling | Compiles. **Behaviour untested — needs a device** |
 
@@ -71,6 +72,30 @@ pip install Pillow && python3 tools/icon.py
 
 Requirements: Xcode 15+, iOS 17 / macOS 14 deployment targets. The one external dependency
 is [`cryptolib-swift`](https://github.com/cryptomator/cryptolib-swift), resolved by SwiftPM.
+
+---
+
+## Knowing which sessions need writing up
+
+The app suggests the sessions a client should have had and has no note for — on the client's
+screen, and as one-tap dates on the note editor. It works out those dates itself, from the notes
+already in the vault plus a cadence ("weekly, Tuesdays at 09:30") stored in the client's metadata
+log, so a Mac that has never been in contact with GroundWork gets the right answer as long as
+iCloud has brought the vault across.
+
+The cadence comes from GroundWork, through a small file — client codes and appointment times, no
+names and nothing clinical. Settings › GroundWork › Sync schedules: pick the file once, and every
+later sync re-reads whatever GroundWork last wrote there. Nothing goes back the other way; whether
+a note has been written stays a tick in GroundWork, done by hand.
+
+The rule both apps implement is written down in **[docs/schedule-sync.md](docs/schedule-sync.md)**,
+because they are two implementations in two languages and a disagreement between them shows up as
+the wrong dates in front of a counsellor. `SessionScheduleTests` asserts fourteen cases against it;
+GroundWork's `scripts/check-schedule-parity.mjs` asserts the same fourteen, with the same expected
+output, against its own code.
+
+A cancelled session leaves no trace in the vault, so its date will still be suggested. That is why
+these are offered as dates to pick from rather than as a list of work outstanding.
 
 ---
 
@@ -152,7 +177,8 @@ through this". That means these all pass on real hardware, not just in the simul
 | 11 | Exported `.note` opens in TextEdit and is readable | No lock-in |
 | 12 | Vault opens in Cryptomator's own app | No lock-in, independently verified |
 | 13 | Import a folder of notes with Wi-Fi off; check the raw folder afterwards | The import claim, demonstrated the way the screen says it can be |
-| 14 | Drag notes out of Apple Notes into a folder, then import that folder | The one import route that depends on behaviour nobody here has run |
+| 14 | Export a client's Apple Notes as Markdown into a folder, then import that folder | The route most people will actually take, end to end |
+| 15 | Import notes with a `Session number:` header, store it as a field, read it back | Metadata becomes metadata rather than prose |
 
 ### Repository and visibility — decided
 
@@ -210,10 +236,10 @@ Decrypted, on the counsellor's screen:
 
 ```
 SM2/
-  2026-06-14T0930-iphone.note
-  2026-06-21T0930-iphone.note
-  2026-06-28T0940-mac.note
-  2026-06-28T1015-mac-K3M9.client
+  2026-06-14T0930-iphone-k3m.note
+  2026-06-21T0930-iphone-k3m.note
+  2026-06-28T0940-mac-7f2.note
+  2026-06-28T1015-mac-7f2-K3M9.client
 ```
 
 In iCloud Drive:
@@ -257,6 +283,19 @@ Not readable, and each says so with what to do instead: older `.doc`, Pages and 
 password-protected files, and PDFs that are scans or photographs. There is no OCR and no
 camera permission with which to acquire one later, so handwriting has to be typed up.
 
+### Apple Notes
+
+**Export as Markdown, one folder per client.** Dragging notes out of Notes into Finder
+does not work — it leaves nothing behind that can be read, which was found out by trying
+it. So: make a folder for a client, select their notes in Notes, export them as Markdown
+into it, repeat, then point the importer at the folder holding all of them.
+
+That route names each file after the note's title, and a counsellor's note titles are
+usually the date — so a date in the filename is read as the session date when the note
+itself does not contain one. Without that, the fallback would be the file's own timestamp,
+which for an export is the afternoon they ran it, and five years of work would arrive
+dated the same day.
+
 ### The three things that are actually hard
 
 **A spreadsheet cannot be guessed at.** Columns are suggested from their names, and from
@@ -282,6 +321,31 @@ codes; the app offers to replace the source's words for that person with their c
 throughout the notes, showing exactly which words; and it scans for emails, phone numbers,
 postcodes, NHS numbers and dates of birth, which it flags and does not touch. Editing
 someone's clinical record on a pattern match is not this app's decision to make.
+
+### The block at the top of the note
+
+People who kept notes in Word or Notes nearly always wrote a little header on each one —
+`Session number: 4`, `Duration: 50 minutes`, `Room: 2` — because there was nowhere else to
+put it. This app has somewhere: note fields, which ride in the note's headers, show as
+labelled metadata rather than prose, and read back on a device that has never heard of the
+field.
+
+So the importer looks for that block, and for each kind of detail it finds:
+
+- **a field you already have, switched on** — matched without asking, because switching
+  that field on is exactly the decision being honoured;
+- **a field you have but have never switched on** — offered, not assumed. Turning a field
+  on changes every note screen from then on;
+- **anything else** — offered as a new field, with the kind guessed from the values, and
+  otherwise left in the note exactly as written.
+
+The default everywhere is to change nothing. A line only leaves the body once a field has
+been chosen for it, because silently restructuring a clinical record on a pattern match is
+not a decision an importer gets to make. `Date:` and `Time:` are never offered (the
+session date is read separately and is part of the note's identity), and neither are
+`Name:`, `DOB:`, `Address:` and their like — offering those would put a name field in an
+app built so that names cannot be stored. They stay in the body, where the
+identifying-details scan flags them.
 
 ### Showing the encryption rather than claiming it
 
@@ -370,6 +434,19 @@ decision someone should have to make on purpose.
 
 These are real, and none of them is hidden in a comment nobody reads.
 
+**Unsaved notes are now held, encrypted, until they are saved.** The gap the append-only
+format could never close was everything typed *before* Save: it lived in the editor's
+`@State` and nowhere else, so an iPhone killing a backgrounded app took the note with it.
+`DraftStore` (`Sources/NotesVaultCrypto/DraftStore.swift`) keeps it in Application Support,
+as ciphertext under the same per-device index key as the index cache, under a hashed
+filename that carries no client code, with complete file protection on iOS. `NoteEditorView`
+writes about a second after the last keystroke and again the moment the app leaves the
+foreground, restores automatically with a notice saying it has done so, and clears the draft
+on save, on either Discard, and when a client is destroyed. `DraftStoreTests` covers the
+round trip, the absence of plaintext on disk and the clearing. Two things it deliberately
+does not do: drafts never reach the vault — a half-written clinical note must not become a
+record — and they do not sync, so a draft started on the phone is on the phone.
+
 **Plaintext briefly touches disk when encrypting.** Cryptomator's library exposes content
 encryption only as `encryptContent(from: URL, to: URL)`; the stream overloads that would
 keep a note in memory are `internal`. So each note is written to a scratch file for the
@@ -378,12 +455,11 @@ file protection on iOS so the key is evicted when the device locks, contents ove
 before unlinking — but the honest fix is upstream: a small PR making those overloads public
 deletes that file entirely. Worth doing before launch.
 
-**The Apple Notes route is written from documentation, not from use.** The import screen
-tells the counsellor to select notes in Notes.app and drag them to a Finder folder. What
-that produces on disk — `.rtfd` bundles, `.textClipping`, something else, one file or
-several — has not been checked on a Mac, and the importer's `.rtfd` handling is written for
-the shape it is expected to be. This is the first thing to try in Stage 2, and the copy on
-that screen should be rewritten from what actually happens.
+**The Apple Notes route now says what actually works, and the rest of it is still
+untried.** Dragging notes into Finder was tried and does not work; the screen says so and
+gives the Markdown export instead. What has *not* been done is a full run of that route
+end to end — export a real client's notes, import the folder, and check the dates and the
+splitting came out right. That is acceptance check 14.
 
 **Excel dates are read by range, not by cell format.** A spreadsheet keeps `14/06/2026` as
 the number 46187, and knowing it is a date rather than a fee means reading the number

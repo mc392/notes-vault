@@ -68,6 +68,69 @@ struct TypedConfirmation: View {
     }
 }
 
+/// The type-back gesture used everywhere a recovery key is shown, on creation and on
+/// reissue alike. Everyone ticks a box saying they wrote something down; not everyone can
+/// type back something they never actually copied, and finding that out now costs a
+/// minute, where finding it out years later costs every note they have.
+struct RecoveryKeyConfirmation: View {
+    let key: RecoveryKey
+    @Binding var typedBack: String
+    @Binding var showingKey: Bool
+    @Binding var matches: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            if showingKey {
+                Text(key.formatted)
+                    .font(.system(.title3, design: .monospaced))
+                    .textSelection(.enabled)
+                    .padding(18)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            } else {
+                Text("Hidden while you type it back.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .padding(18)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+
+            Button(showingKey ? "Hide it and type it back" : "Show it again") {
+                showingKey.toggle()
+            }
+            .font(.footnote)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Type it back to confirm you have it")
+                    .font(.headline)
+                TextField("XXXX-XXXX-XXXX-…", text: $typedBack)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(.body, design: .monospaced))
+                    .keyEntryStyle()
+                if !typedBack.isEmpty {
+                    Label(
+                        matches ? "That matches." : "Not a match yet.",
+                        systemImage: matches ? "checkmark.circle" : "circle.dashed"
+                    )
+                    .font(.footnote)
+                    .foregroundStyle(matches ? Color.green : Color.secondary)
+                }
+            }
+        }
+        .onChange(of: typedBack) { _, _ in updateMatch() }
+        .onAppear(perform: updateMatch)
+    }
+
+    private func updateMatch() {
+        guard let typed = try? RecoveryKey(typed: typedBack) else {
+            matches = false
+            return
+        }
+        matches = typed.entropy == key.entropy
+    }
+}
+
 struct StatusChip: View {
     let status: ClientStatus
 

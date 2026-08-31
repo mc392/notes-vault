@@ -8,6 +8,11 @@ struct ClientDetailView: View {
     @State private var composing = false
     @State private var editingClient = false
     @State private var showingSuperseded = false
+    /// The date a tapped suggestion put into the editor. Cleared when the sheet closes so
+    /// the next plain "New note" opens on today rather than on a stale suggestion.
+    @State private var composingDate: Date?
+
+    private var awaiting: [Date] { model.predictedSessions(for: code) }
 
     private var client: ClientSummary? { model.index.client(code) }
 
@@ -48,8 +53,35 @@ struct ClientDetailView: View {
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
+                        if let schedule = client.schedule {
+                            Label(schedule.summary, systemImage: "calendar")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     .padding(.vertical, 2)
+                }
+            }
+
+            if !awaiting.isEmpty {
+                Section {
+                    ForEach(awaiting, id: \.self) { date in
+                        Button {
+                            composingDate = date
+                            composing = true
+                        } label: {
+                            HStack {
+                                Text(Formatted.dateTime(date))
+                                Spacer()
+                                Image(systemName: "square.and.pencil")
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                } header: {
+                    Text("Not yet written up")
+                } footer: {
+                    Text("Worked out from this client's usual pattern and the notes already here — so a session that was cancelled will still be listed. Nothing is recorded until you write one.")
                 }
             }
 
@@ -63,7 +95,9 @@ struct ClientDetailView: View {
                 } else {
                     ForEach(entries) { entry in
                         NavigationLink {
-                            NoteDetailView(entry: entry)
+                            // The list as it stands, so the note screen can step through
+                            // it without coming back here.
+                            NoteDetailView(entry: entry, siblings: entries)
                         } label: {
                             NoteRow(entry: entry, isSuperseded: supersededIDs.contains(entry.id))
                         }
@@ -89,14 +123,15 @@ struct ClientDetailView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
+                    composingDate = nil
                     composing = true
                 } label: {
                     Label("New note", systemImage: "square.and.pencil")
                 }
             }
         }
-        .sheet(isPresented: $composing) {
-            NoteEditorView(client: code, correcting: nil)
+        .sheet(isPresented: $composing, onDismiss: { composingDate = nil }) {
+            NoteEditorView(client: code, correcting: nil, sessionDate: composingDate)
         }
         .sheet(isPresented: $editingClient) {
             if let client {
@@ -150,6 +185,10 @@ struct ClientSettingsView: View {
     @State private var overrideLastContact: Bool
     @State private var lastContact: Date
     @State private var destroying = false
+    @State private var hasSchedule: Bool
+    @State private var cadenceDays: Int
+    @State private var usualDay: Weekday
+    @State private var usualTime: Date
 
     init(client: ClientSummary) {
         self.client = client
@@ -165,10 +204,35 @@ struct ClientSettingsView: View {
         }
         _overrideLastContact = State(initialValue: false)
         _lastContact = State(initialValue: client.lastContact ?? Date())
+
+        let schedule = client.schedule
+        _hasSchedule = State(initialValue: schedule != nil)
+        _cadenceDays = State(initialValue: schedule?.cadenceDays ?? 7)
+        // Defaults chosen so switching the toggle on gives something usable rather than
+        // midnight on a Sunday: the day and time of the last session, if there was one.
+        _usualDay = State(initialValue: schedule?.usualDay
+            ?? Weekday(calendarWeekday: Calendar.current.component(.weekday, from: client.lastContact ?? Date()))
+            ?? .mon)
+        _usualTime = State(initialValue: Self.time(schedule?.usualTime, fallback: client.lastContact ?? Date()))
+    }
+
+    private static func time(_ value: TimeOfDay?, fallback: Date) -> Date {
+        guard let value else { return fallback }
+        return Calendar.current.date(bySettingHour: value.hour, minute: value.minute, second: 0, of: fallback) ?? fallback
     }
 
     private var basis: RetentionBasis {
         seenAsMinor ? .minor(dateOfBirth: dateOfBirth) : .adult
+    }
+
+    private var schedule: SessionSchedule? {
+        guard hasSchedule else { return nil }
+        let parts = Calendar.current.dateComponents([.hour, .minute], from: usualTime)
+        return SessionSchedule(
+            cadenceDays: cadenceDays,
+            usualDay: usualDay,
+            usualTime: TimeOfDay(hour: parts.hour ?? 0, minute: parts.minute ?? 0)
+        )
     }
 
     var body: some View {
@@ -186,6 +250,29 @@ struct ClientSettingsView: View {
                          : "No retention clock while the work is ongoing.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
+                }
+
+                Section {
+                    Toggle("Has a regular slot", isOn: $hasSchedule)
+                    if hasSchedule {
+                        Picker("How often", selection: $cadenceDays) {
+                            ForEach(SessionSchedule.offered, id: \.days) { option in
+                                Text(option.label).tag(option.days)
+                            }
+                        }
+                        Picker("Usual day", selection: $usualDay) {
+                            ForEach(Weekday.allCases, id: \.self) { day in
+                                Text(day.displayName).tag(day)
+                            }
+                        }
+                        DatePicker("Usual time", selection: $usualTime, displayedComponents: .hourAndMinute)
+                    }
+                } header: {
+                    Text("Sessions")
+                } footer: {
+                    Text(hasSchedule
+                         ? "Used to suggest which sessions still need writing up. Syncing schedules from GroundWork sets this for you."
+                         : "Without a regular slot this app cannot suggest which sessions are outstanding — you pick the date on each note instead.")
                 }
 
                 Section {
@@ -230,7 +317,9 @@ struct ClientSettingsView: View {
                                 client.code,
                                 status: status,
                                 retentionBasis: basis,
-                                lastContactOverride: overrideLastContact ? lastContact : nil
+                                lastContactOverride: overrideLastContact ? lastContact : nil,
+                                schedule: schedule,
+                                seriesStart: client.seriesStart
                             )
                             dismiss()
                         }

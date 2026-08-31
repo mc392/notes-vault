@@ -56,6 +56,10 @@ public final class AppModel: ObservableObject {
     private var store: VaultStore?
     private var indexStore: IndexStore?
     private var vaultID: String?
+    /// Autosaved, unsaved notes. Created once and kept for the life of the app: it holds
+    /// no vault state of its own, and unlike the index it must survive a lock — the drafts
+    /// are encrypted with the index key, which survives one too.
+    private let draftStore = DraftStore()
 
     private static let queue = DispatchQueue(label: "com.charlottebloor.groundworknotes.vault", qos: .userInitiated)
     private static let retentionKey = "retention.policy"
@@ -118,10 +122,23 @@ public final class AppModel: ObservableObject {
 
     public func forgetFolder() {
         lock()
+        if let files, let vaultID = Self.readVaultID(from: files) {
+            KeychainStore.forget(vaultID: vaultID)
+        }
+        files?.relinquish()
         VaultBookmark.clear()
         files = nil
         folderName = nil
         phase = .chooseFolder
+    }
+
+    /// The vault's `jti`, read the same non-secret way `unlockWithBiometrics` does — the
+    /// config is signed rather than encrypted, so this needs no key. Nil if the folder has
+    /// no vault in it or the read fails, in which case there is nothing to forget.
+    private static func readVaultID(from files: FileSystemVaultStore) -> String? {
+        guard let configData = try? files.read(at: [VaultLayout.vaultConfigFilename]),
+              let configuration = try? VaultBootstrap.decodeConfiguration(configData) else { return nil }
+        return configuration.jti
     }
 
     // MARK: - Creating and unlocking
@@ -169,17 +186,31 @@ public final class AppModel: ObservableObject {
     public func unlockWithBiometrics() async {
         guard let files else { return }
         guard let configData = try? files.read(at: [VaultLayout.vaultConfigFilename]),
-              let configuration = try? VaultBootstrap.decodeConfiguration(configData),
-              let passphrase = KeychainStore.passphrase(
-                vaultID: configuration.jti,
-                reason: "Unlock your clinical notes"
-              ) else { return }
-        await unlock(passphrase: passphrase)
+              let configuration = try? VaultBootstrap.decodeConfiguration(configData) else {
+            errorMessage = "The vault folder couldn't be read — check it's still where you left it."
+            return
+        }
+
+        switch KeychainStore.passphrase(vaultID: configuration.jti, reason: "Unlock your clinical notes") {
+        case .value(let passphrase):
+            await unlock(passphrase: passphrase)
+        case .cancelled:
+            // Declining is a normal choice — the passphrase field is still right there.
+            break
+        case .unavailable:
+            errorMessage = "Face ID unlock isn't set up any more on this device — use your passphrase, then turn it back on from the unlock screen."
+            KeychainStore.remove(.passphrase, vaultID: configuration.jti)
+        }
     }
 
     /// Drops the key and everything derived from it. Folder access is kept — it is
     /// permission to a folder, not to its contents, and re-acquiring it on every unlock
     /// would mean re-prompting for a folder the counsellor already chose.
+    ///
+    /// Deliberately does *not* call `files.relinquish()`: unlocking again reuses the same
+    /// `FileSystemVaultStore`, and there is no re-acquire path — relinquishing here would
+    /// leave a locked vault unable to unlock again without choosing the folder afresh.
+    /// `relinquish()` is only called from `forgetFolder()`, where the store is discarded too.
     public func lock() {
         session = nil
         store = nil
@@ -258,6 +289,37 @@ public final class AppModel: ObservableObject {
         return result
     }
 
+    // MARK: - Drafts
+
+    /// Everything the editor does with a half-written note goes through here, so views
+    /// never reach into the crypto module themselves — and so all three calls can be
+    /// no-ops the moment the vault is locked.
+    ///
+    /// Saving is fire-and-forget onto the vault queue rather than awaited: it happens as
+    /// the counsellor types, and a draft is never worth a pause between two keystrokes.
+    /// The queue is serial, so a save enqueued just before a clear still lands first and
+    /// the clear still wins.
+    public func saveDraft(_ draft: NoteDraft) {
+        guard store != nil, let vaultID, let draftStore else { return }
+        Self.queue.async { draftStore.save(draft, vaultID: vaultID) }
+    }
+
+    public func loadDraft(client: ClientCode, correcting: NoteID?) async -> NoteDraft? {
+        guard store != nil, let vaultID, let draftStore else { return nil }
+        var draft: NoteDraft?
+        await run(nil) {
+            draftStore.load(vaultID: vaultID, client: client, correcting: correcting)
+        } then: { found in
+            draft = found
+        }
+        return draft
+    }
+
+    public func clearDraft(client: ClientCode, correcting: NoteID?) {
+        guard store != nil, let vaultID, let draftStore else { return }
+        Self.queue.async { draftStore.clear(vaultID: vaultID, client: client, correcting: correcting) }
+    }
+
     // MARK: - Clients
 
     public func createClient(_ code: ClientCode) async {
@@ -279,7 +341,9 @@ public final class AppModel: ObservableObject {
         _ code: ClientCode,
         status: ClientStatus,
         retentionBasis: RetentionBasis,
-        lastContactOverride: Date?
+        lastContactOverride: Date?,
+        schedule: SessionSchedule?,
+        seriesStart: Date?
     ) async {
         guard let store else { return }
         let event = ClientMetadataEvent(
@@ -287,13 +351,117 @@ public final class AppModel: ObservableObject {
             device: store.deviceName,
             status: status,
             retentionBasis: retentionBasis,
-            lastContactOverride: lastContactOverride
+            lastContactOverride: lastContactOverride,
+            schedule: schedule,
+            seriesStart: seriesStart
         )
         await run("Saving…") {
             try store.write(event: event)
         } then: { [weak self] _ in
             Task { await self?.refreshIndex(force: true) }
         }
+    }
+
+    // MARK: - Predicted sessions
+
+    /// The sessions this client should have had since their last note, and has not.
+    ///
+    /// Computed entirely from the vault — the notes already stored and the cadence in the
+    /// client's metadata — so it is right on a Mac that has never been in contact with
+    /// GroundWork, as long as iCloud has brought the vault across. See
+    /// `docs/schedule-sync.md`.
+    public func predictedSessions(for code: ClientCode) -> [Date] {
+        SessionPrediction.expected(for: code, in: index)
+    }
+
+    // MARK: - Schedule sync
+
+    public var rosterFileName: String? { RosterBookmark.storedDisplayName }
+    public var rosterLastSync: Date? { RosterBookmark.lastSync }
+
+    /// Called with the file the picker returned. Remembers it, then reads it — choosing the
+    /// file and syncing it are one action as far as the counsellor is concerned.
+    public func chooseRosterFile(_ url: URL) async -> RosterSyncPlan? {
+        do {
+            try RosterBookmark.store(url)
+        } catch {
+            report(error)
+            return nil
+        }
+        return await planScheduleSync()
+    }
+
+    public func forgetRosterFile() {
+        RosterBookmark.clear()
+        objectWillChange.send()
+    }
+
+    /// Reads the roster and works out what would change. Writes nothing.
+    ///
+    /// Split from `applyScheduleSync` on purpose: a sync can end a client, which starts a
+    /// retention clock, so it is shown before it happens rather than reported afterwards.
+    public func planScheduleSync() async -> RosterSyncPlan? {
+        guard let store else { return nil }
+        let url: URL?
+        do {
+            url = try RosterBookmark.resolve()
+        } catch {
+            report(error)
+            return nil
+        }
+        guard let url else { return nil }
+
+        let device = store.deviceName
+        var plan: RosterSyncPlan?
+        await run("Reading GroundWork's schedules…") { () -> RosterSyncPlan in
+            let roster = try ScheduleRoster.parse(try RosterBookmark.read(url))
+            let current = try store.allCurrentMetadata()
+            var built = RosterSync.plan(
+                roster: roster,
+                existing: current.events,
+                knownClients: Array(current.events.keys),
+                device: device
+            )
+            if !current.issues.isEmpty {
+                built = RosterSyncPlan(
+                    changes: built.changes,
+                    unchanged: built.unchanged,
+                    untouched: built.untouched,
+                    issues: built.issues + current.issues
+                )
+            }
+            return built
+        } then: { result in
+            plan = result
+        }
+        return plan
+    }
+
+    /// Writes an approved plan. One metadata event per client that actually changed.
+    @discardableResult
+    public func applyScheduleSync(_ plan: RosterSyncPlan) async -> Int {
+        guard let store, !plan.isEmpty else {
+            RosterBookmark.lastSync = Date()
+            return 0
+        }
+        var written = 0
+
+        await run("Updating \(plan.changes.count) client\(plan.changes.count == 1 ? "" : "s")…") { () -> Int in
+            var count = 0
+            for change in plan.changes {
+                try store.write(event: change.event)
+                count += 1
+            }
+            return count
+        } then: { count in
+            written = count
+        }
+
+        if written > 0 {
+            RosterBookmark.lastSync = Date()
+            await refreshIndex(force: true)
+        }
+        return written
     }
 
     // MARK: - Retention
@@ -310,8 +478,13 @@ public final class AppModel: ObservableObject {
     /// which requires the code to be typed out in full first.
     public func destroy(client code: ClientCode) async {
         guard let store else { return }
+        // A destroyed client whose half-written note survived in Application Support would
+        // make a liar of the destruction promise, so the drafts go with the notes.
+        let drafts = draftStore
+        let vaultID = self.vaultID
         await run("Removing \(code)…") {
             try store.destroyEverything(for: code)
+            if let drafts, let vaultID { drafts.clearAll(vaultID: vaultID) }
         } then: { [weak self] _ in
             Task { await self?.refreshIndex(force: true) }
         }

@@ -76,6 +76,7 @@ public enum ImportRunner {
                     code: code,
                     device: store.deviceName,
                     options: plan.options,
+                    acceptedFields: plan.acceptedFields,
                     now: now
                 ) else { return nil }
                 return (code, item, record)
@@ -164,25 +165,45 @@ public enum ImportRunner {
         code: ClientCode,
         device: String,
         options: ImportOptions = .default,
+        acceptedFields: [String: String] = [:],
         now: Date = Date()
     ) -> NoteRecord? {
         guard let session = item.date.date else { return nil }
 
-        var body = item.body
+        // The metadata block first, and before the title is added, so that lifting a
+        // session number out of the note cannot be confused by a heading put there by this
+        // app rather than by the counsellor.
+        let lifted = NoteHeaderScan.apply(to: item.body, accepting: acceptedFields)
+        var body = lifted.body
+
         if let title = item.sourceTitle,
            !title.isEmpty,
            !body.hasPrefix(title),
            title != group.key {
             body = title + "\n\n" + body
         }
+
+        var fieldHeaders = lifted.headers
         if group.replaceNamesInBodies {
             body = SensitiveTextScan.replacingNames(in: body, names: group.nameCandidates, with: code.rawValue)
+            // The values too. "Room: Sarah's front room" is as much a name as anything in
+            // the body, and it would be an odd kind of care that cleaned one and not the
+            // other.
+            fieldHeaders = fieldHeaders.mapValues {
+                SensitiveTextScan.replacingNames(in: $0, names: group.nameCandidates, with: code.rawValue)
+            }
         }
 
         var headers: [String: String] = [
             "imported-from": header(item.origin.description),
             "imported-on": VaultDate.utcString(now)
         ]
+        // The note format's own headers win, always. A field can never shadow one, because
+        // `NoteFieldSettings.addCustomField` refuses a reserved key and `NoteHeaderScan`
+        // refuses to offer one — this is the third guard on the same rule.
+        for (key, value) in fieldHeaders where !NoteFieldDefinition.reservedKeys.contains(key) {
+            headers[key] = value
+        }
         if !item.date.isCertain {
             // Says so in the note itself, not only on the screen that imported it.
             headers["imported-session-date"] = "uncertain — \(header(item.date.explanation))"

@@ -161,12 +161,7 @@ struct RecoveryKeyView: View {
     @EnvironmentObject private var model: AppModel
     @State private var typedBack = ""
     @State private var showingKey = true
-
-    private var matches: Bool {
-        guard let key = model.pendingRecoveryKey else { return false }
-        guard let typed = try? RecoveryKey(typed: typedBack) else { return false }
-        return typed.entropy == key.entropy
-    }
+    @State private var matches = false
 
     var body: some View {
         ScrollView {
@@ -177,26 +172,12 @@ struct RecoveryKeyView: View {
                     .foregroundStyle(.secondary)
 
                 if let key = model.pendingRecoveryKey {
-                    if showingKey {
-                        Text(key.formatted)
-                            .font(.system(.title3, design: .monospaced))
-                            .textSelection(.enabled)
-                            .padding(18)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(.quaternary, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    } else {
-                        Text("Hidden while you type it back.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                            .padding(18)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(.quaternary, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    }
-
-                    Button(showingKey ? "Hide it and type it back" : "Show it again") {
-                        showingKey.toggle()
-                    }
-                    .font(.footnote)
+                    RecoveryKeyConfirmation(
+                        key: key,
+                        typedBack: $typedBack,
+                        showingKey: $showingKey,
+                        matches: $matches
+                    )
                 }
 
                 WarningBox(
@@ -204,23 +185,6 @@ struct RecoveryKeyView: View {
                     title: "You will not see this again",
                     detail: "It is not stored anywhere we can read it, and it is not in a backup of this app. A photo of it on your phone is a copy of your clinical records — treat it that way."
                 )
-
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Type it back to confirm you have it")
-                        .font(.headline)
-                    TextField("XXXX-XXXX-XXXX-…", text: $typedBack)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(.body, design: .monospaced))
-                        .keyEntryStyle()
-                    if !typedBack.isEmpty {
-                        Label(
-                            matches ? "That matches." : "Not a match yet.",
-                            systemImage: matches ? "checkmark.circle" : "circle.dashed"
-                        )
-                        .font(.footnote)
-                        .foregroundStyle(matches ? Color.green : Color.secondary)
-                    }
-                }
 
                 Button("I have written it down") {
                     model.acknowledgeRecoveryKey()

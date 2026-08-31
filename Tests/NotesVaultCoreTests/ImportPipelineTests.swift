@@ -325,3 +325,46 @@ final class SensitiveTextScanTests: XCTestCase {
         XCTAssertEqual(replaced, "SM2 attended.")
     }
 }
+
+final class ImportFilenameDateTests: XCTestCase {
+    /// Apple Notes exports one Markdown file per note, named after the note's title — and
+    /// a counsellor's note titles are usually the date. The file's own timestamp is the
+    /// moment they ran the export, so without this every note in the folder would arrive
+    /// dated the same afternoon.
+    func testADateInTheFilenameBeatsTheFilesTimestamp() {
+        let exportedToday = VaultDate.parse("2026-08-30T18:00:00Z")!
+        let file = ImportFile(
+            name: "14 June 2026.md",
+            relativePath: ["Sarah M", "14 June 2026.md"],
+            data: Data("Discussed sleep. Agreed homework.".utf8),
+            modified: exportedToday
+        )
+        let result = ImportReader.read(file, options: options, now: fixedNow)
+        XCTAssertEqual(stamp(result.items.first?.date.date), "2026-06-14T0000")
+        XCTAssertTrue(result.items.first?.date.isCertain == true)
+        XCTAssertTrue(result.items.first?.date.explanation.contains("file's name") == true)
+    }
+
+    /// A date inside the note still wins — that is what the counsellor typed as the
+    /// session date, and a filename is only ever a fallback.
+    func testADateInsideTheNoteStillWins() {
+        let file = ImportFile(
+            name: "Session 4.md",
+            data: Data("21/06/2026\nReviewed the week.".utf8),
+            modified: VaultDate.parse("2026-08-30T18:00:00Z")!
+        )
+        let result = ImportReader.read(file, options: options, now: fixedNow)
+        XCTAssertEqual(stamp(result.items.first?.date.date), "2026-06-21T0000")
+    }
+
+    /// A filename date cannot be the date of the third entry inside a running document.
+    func testAFilenameDateIsNotAppliedToASplitDocument() {
+        let file = ImportFile(
+            name: "14 June 2026.md",
+            data: Data("14/06/2026\nOne.\n\n21/06/2026\nTwo.".utf8)
+        )
+        let result = ImportReader.read(file, options: options, now: fixedNow)
+        XCTAssertEqual(result.items.count, 2)
+        XCTAssertEqual(stamp(result.items[1].date.date), "2026-06-21T0000")
+    }
+}

@@ -425,3 +425,190 @@ final class ImportSkippingTests: XCTestCase {
         XCTAssertFalse(plan.groups.first { $0.key == "Old backup" }!.isSkipped)
     }
 }
+
+final class NoteHeaderScanTests: XCTestCase {
+    private let block = """
+    Session 4
+    Date: 14/06/2026
+    Session number: 4
+    Duration: 50 minutes
+    Room: 2
+
+    Client presented as flat. We talked about: sleep, work, and the move.
+    Agreed: homework before next week.
+    """
+
+    func testFindsTheMetadataBlockAndNothingBelowIt() {
+        let found = NoteHeaderScan.detect(in: block)
+        XCTAssertEqual(found.map(\.label), ["Session number", "Duration", "Room"])
+        XCTAssertEqual(found.map(\.value), ["4", "50 minutes", "2"])
+    }
+
+    /// A colon in a sentence is not a field. Getting this wrong would strip the first line
+    /// of a clinical note and file it as metadata.
+    func testASentenceWithAColonIsNotAField() {
+        XCTAssertNil(NoteHeaderScan.field(from: "Client presented as flat. We talked about: sleep, work, and the move."))
+        XCTAssertNil(NoteHeaderScan.field(from: "09:30"))
+        XCTAssertNil(NoteHeaderScan.field(from: "14/06/2026 09:30 - session"))
+    }
+
+    /// The date is the note's session date already, and a name has nowhere to go in this
+    /// app — so neither is ever offered as a field.
+    func testDatesAndIdentitiesAreNeverOffered() {
+        let found = NoteHeaderScan.detect(in: "Date: 14/06/2026\nName: Sarah Mitchell\nDOB: 14/06/1990\nRoom: 2")
+        XCTAssertEqual(found.map(\.label), ["Room"])
+    }
+
+    /// Markdown survives an export from Apple Notes.
+    func testReadsMarkdownEmphasisAroundTheLabel() {
+        XCTAssertEqual(NoteHeaderScan.field(from: "**Session number:** 4")?.label, "Session number")
+        XCTAssertEqual(NoteHeaderScan.field(from: "- Location: Room 2")?.value, "Room 2")
+    }
+
+    func testKeepsWhatWasNotAccepted() {
+        let result = NoteHeaderScan.apply(to: block, accepting: ["session-number": "session-number"])
+        XCTAssertEqual(result.headers, ["session-number": "4"])
+        XCTAssertFalse(result.body.contains("Session number: 4"))
+        XCTAssertTrue(result.body.contains("Duration: 50 minutes"))
+        XCTAssertTrue(result.body.contains("Date: 14/06/2026"))
+        XCTAssertTrue(result.body.contains("Client presented as flat"))
+    }
+
+    /// The default is to change nothing.
+    func testWithNoDecisionsTheNoteIsUntouched() {
+        XCTAssertEqual(NoteHeaderScan.apply(to: block, accepting: [:]).body, block)
+    }
+
+    func testMatchesAFieldTheDeviceAlreadyHas() {
+        var settings = NoteFieldSettings.default
+        settings.setEnabled(true, forKey: "session-number")
+
+        let items = [ImportedItem(
+            origin: ImportOrigin(container: "n.txt"),
+            groupKey: "Sarah M",
+            date: .unknown,
+            body: block
+        )]
+        let candidates = ImportFieldCandidate.gather(from: items, noteFields: settings)
+
+        let sessionNumber = candidates.first { $0.key == "session-number" }
+        XCTAssertEqual(sessionNumber?.matchingFieldLabel, "Session number")
+        XCTAssertTrue(sessionNumber?.matchingFieldIsEnabled == true)
+        XCTAssertEqual(sessionNumber?.suggestedKind, .number)
+
+        // Nothing on this device is called "Room", so it arrives as a suggestion only.
+        let room = candidates.first { $0.key == "room" }
+        XCTAssertNil(room?.matchingFieldKey)
+        XCTAssertEqual(room?.examples, ["2"])
+    }
+
+    /// A built-in that exists but has never been switched on is a suggestion, not a match:
+    /// turning a field on changes what every future note screen shows, and that is the
+    /// counsellor's call.
+    func testAFieldThatExistsButIsOffIsNotUsedWithoutAsking() {
+        let plan = ImportPlan.make(
+            results: [ImportFileResult(
+                file: "n.txt",
+                format: .plainText,
+                items: [ImportedItem(origin: ImportOrigin(container: "n.txt"), groupKey: "Sarah M", date: .found(Fixture.date("2026-06-14T09:30:00Z"), raw: "t"), body: block)],
+                table: nil,
+                issues: []
+            )],
+            existingClients: [],
+            noteFields: .default,
+            options: options
+        )
+        XCTAssertTrue(plan.acceptedFields.isEmpty)
+        XCTAssertEqual(plan.fieldCandidates.first { $0.key == "session-number" }?.matchingFieldIsEnabled, false)
+    }
+}
+
+final class ImportFieldWritingTests: XCTestCase {
+    private let body = "Session number: 4\nDuration: 50 minutes\n\nSarah arrived on time."
+
+    private func plan(accepting: [String: ImportFieldDecision]) -> ImportPlan {
+        var settings = NoteFieldSettings.default
+        settings.setEnabled(true, forKey: "session-number")
+
+        var plan = ImportPlan.make(
+            results: [ImportFileResult(
+                file: "n.txt",
+                format: .plainText,
+                items: [ImportedItem(
+                    origin: ImportOrigin(container: "n.txt"),
+                    groupKey: "Sarah Mitchell",
+                    date: .found(Fixture.date("2026-06-14T09:30:00Z"), raw: "t"),
+                    body: body
+                )],
+                table: nil,
+                issues: []
+            )],
+            existingClients: [],
+            noteFields: settings,
+            options: options
+        )
+        plan.assign(Fixture.code("SM2"), toGroup: "Sarah Mitchell")
+        for (key, decision) in accepting { plan.setFieldDecision(decision, forKey: key) }
+        return plan
+    }
+
+    /// The whole point: a session number written as a line of prose becomes a value on the
+    /// field the counsellor already uses for it.
+    func testAnAcceptedFieldBecomesANoteHeader() throws {
+        let (store, _, _) = Fixture.store()
+        let report = ImportRunner.run(plan: plan(accepting: [:]), store: store, now: fixedNow)
+        let filename = try XCTUnwrap(report.outcomes.first?.filename)
+        let note = try store.readNote(client: Fixture.code("SM2"), filename: filename)
+
+        XCTAssertEqual(note.extraHeaders["session-number"], "4")
+        XCTAssertFalse(note.body.contains("Session number"))
+        // Not chosen, so left exactly where it was.
+        XCTAssertTrue(note.body.contains("Duration: 50 minutes"))
+    }
+
+    func testADeclinedFieldStaysInTheNote() throws {
+        let (store, _, _) = Fixture.store()
+        let report = ImportRunner.run(
+            plan: plan(accepting: ["session-number": .leaveInNote]),
+            store: store,
+            now: fixedNow
+        )
+        let filename = try XCTUnwrap(report.outcomes.first?.filename)
+        let note = try store.readNote(client: Fixture.code("SM2"), filename: filename)
+
+        XCTAssertNil(note.extraHeaders["session-number"])
+        XCTAssertTrue(note.body.contains("Session number: 4"))
+    }
+
+    func testANewlyAddedFieldCanBeStoredToo() throws {
+        let (store, _, _) = Fixture.store()
+        let report = ImportRunner.run(
+            plan: plan(accepting: ["duration": .store(fieldKey: "duration")]),
+            store: store,
+            now: fixedNow
+        )
+        let filename = try XCTUnwrap(report.outcomes.first?.filename)
+        let note = try store.readNote(client: Fixture.code("SM2"), filename: filename)
+
+        XCTAssertEqual(note.extraHeaders["duration"], "50 minutes")
+        XCTAssertEqual(note.extraHeaders["session-number"], "4")
+        XCTAssertEqual(note.body, "SM2 arrived on time.")
+    }
+
+    /// A field value is as capable of holding a name as the note is.
+    func testNamesAreReplacedInFieldValuesToo() throws {
+        let (store, _, _) = Fixture.store()
+        var built = plan(accepting: ["room": .store(fieldKey: "room")])
+        built.groups[0].items = [ImportedItem(
+            origin: ImportOrigin(container: "n.txt"),
+            groupKey: "Sarah Mitchell",
+            date: .found(Fixture.date("2026-06-14T09:30:00Z"), raw: "t"),
+            body: "Room: Sarah's front room\n\nA home visit."
+        )]
+
+        let report = ImportRunner.run(plan: built, store: store, now: fixedNow)
+        let filename = try XCTUnwrap(report.outcomes.first?.filename)
+        let note = try store.readNote(client: Fixture.code("SM2"), filename: filename)
+        XCTAssertEqual(note.extraHeaders["room"], "SM2's front room")
+    }
+}

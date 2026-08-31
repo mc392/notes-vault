@@ -5,13 +5,47 @@ import NotesVaultCore
 /// write a correction, which is a new entry beside it rather than a replacement of it.
 struct NoteDetailView: View {
     @EnvironmentObject private var model: AppModel
-    let entry: NoteIndexEntry
 
+    /// The notes this one was opened from, in the order they were listed — newest first,
+    /// and already filtered the way the client screen was filtering them, so "the next
+    /// note" means the next one the counsellor could see rather than the next one that
+    /// exists.
+    ///
+    /// A snapshot on purpose. Writing a correction rebuilds the index underneath this
+    /// screen, and a list that reordered itself while somebody was reading through it
+    /// would move the ground under them.
+    private let siblings: [NoteIndexEntry]
+
+    @State private var position: Int
     @State private var note: NoteRecord?
     @State private var loadFailure: String?
     @State private var correcting = false
 
+    init(entry: NoteIndexEntry, siblings: [NoteIndexEntry] = []) {
+        let list = siblings.contains { $0.id == entry.id } ? siblings : [entry]
+        self.siblings = list
+        _position = State(initialValue: list.firstIndex { $0.id == entry.id } ?? 0)
+    }
+
+    private var entry: NoteIndexEntry { siblings[min(position, siblings.count - 1)] }
+    /// The list runs newest first, so a later session is up and an earlier one is down.
+    private var hasLater: Bool { position > 0 }
+    private var hasEarlier: Bool { position + 1 < siblings.count }
+
     private var supersededBy: [NoteIndexEntry] { model.index.corrections(of: entry.id) }
+
+    /// Counted oldest-first, because that is the order the sessions happened in — the
+    /// list's own newest-first order is a convenience, not how anyone thinks about a
+    /// course of work.
+    private var positionLabel: String { "Note \(siblings.count - position) of \(siblings.count)" }
+
+    private func move(by offset: Int) {
+        let target = position + offset
+        guard siblings.indices.contains(target) else { return }
+        note = nil
+        loadFailure = nil
+        position = target
+    }
 
     var body: some View {
         ScrollView {
@@ -22,6 +56,11 @@ struct NoteDetailView: View {
                     Text("Written \(Formatted.dateTime(entry.written)) on \(entry.device) · \(entry.template.displayName) · \(entry.wordCount) words")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    if siblings.count > 1 {
+                        Text(positionLabel)
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
                 }
 
                 if !supersededBy.isEmpty {
@@ -69,7 +108,25 @@ struct NoteDetailView: View {
         }
         .navigationTitle(entry.client.rawValue)
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
+            ToolbarItemGroup(placement: .primaryAction) {
+                if siblings.count > 1 {
+                    Button {
+                        move(by: 1)
+                    } label: {
+                        Label("Earlier session", systemImage: "chevron.down")
+                    }
+                    .disabled(!hasEarlier)
+                    .keyboardShortcut(.downArrow, modifiers: .command)
+
+                    Button {
+                        move(by: -1)
+                    } label: {
+                        Label("Later session", systemImage: "chevron.up")
+                    }
+                    .disabled(!hasLater)
+                    .keyboardShortcut(.upArrow, modifiers: .command)
+                }
+
                 Button {
                     correcting = true
                 } label: {
@@ -78,7 +135,9 @@ struct NoteDetailView: View {
                 .disabled(note == nil)
             }
         }
-        .task {
+        // Keyed on the note, so stepping to the next one loads it rather than leaving the
+        // previous note's text under a new date.
+        .task(id: entry.id) {
             if let loaded = await model.readNote(entry) {
                 note = loaded
             } else {

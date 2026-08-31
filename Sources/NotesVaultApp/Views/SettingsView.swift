@@ -10,6 +10,7 @@ struct SettingsView: View {
     @State private var exportedCount: Int?
     @State private var changingPassphrase = false
     @State private var reissuingRecoveryKey = false
+    @State private var syncingSchedules = false
 
     var body: some View {
         List {
@@ -25,6 +26,23 @@ struct SettingsView: View {
                 Text("Vault")
             } footer: {
                 Text("Notes are read from the folder every time this app opens, so a note written on another device appears here once its sync has finished.")
+            }
+
+            Section {
+                Button {
+                    syncingSchedules = true
+                } label: {
+                    Label("Sync schedules", systemImage: "arrow.triangle.2.circlepath")
+                }
+                if let last = model.rosterLastSync {
+                    Text("Last synced \(Formatted.dateTime(last)).")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            } header: {
+                Text("GroundWork")
+            } footer: {
+                Text("Brings across how often each client is seen, so this app can suggest which sessions still need writing up. Client codes and appointment times only — no names, and nothing about a session ever goes back to GroundWork.")
             }
 
             Section {
@@ -104,7 +122,7 @@ struct SettingsView: View {
             Section {
                 Button("Use a different folder", role: .destructive) { model.forgetFolder() }
             } footer: {
-                Text("Forgets where the vault is on this device. Nothing in the folder is touched, and the notes stay exactly where they are.")
+                Text("Forgets where the vault is on this device. Nothing in the folder is touched, and the notes stay exactly where they are. Face ID unlock for this vault is switched off on this device too.")
             }
 
             Section("About") {
@@ -115,6 +133,9 @@ struct SettingsView: View {
         .navigationTitle("Settings")
         .sheet(isPresented: $importing) {
             ImportView()
+        }
+        .sheet(isPresented: $syncingSchedules) {
+            ScheduleSyncView()
         }
         .fileImporter(isPresented: $exporting, allowedContentTypes: [.folder]) { result in
             if case let .success(url) = result {
@@ -177,25 +198,33 @@ struct ReissueRecoveryKeyView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var passphrase = ""
+    @State private var typedBack = ""
+    @State private var showingKey = true
+    @State private var matches = false
+    @State private var confirmingClose = false
 
     var body: some View {
         NavigationStack {
             Form {
                 if let key = model.pendingRecoveryKey {
                     Section {
-                        Text(key.formatted)
-                            .font(.system(.body, design: .monospaced))
-                            .textSelection(.enabled)
+                        RecoveryKeyConfirmation(
+                            key: key,
+                            typedBack: $typedBack,
+                            showingKey: $showingKey,
+                            matches: $matches
+                        )
                     } header: {
                         Text("Your new recovery key")
                     } footer: {
-                        Text("Write this down and destroy the old one — it no longer opens this vault. You will not see this again.")
+                        Text("Your old key stopped working the moment this one was issued. Write this one down and destroy the old paper copy.")
                     }
                     Section {
                         Button("I have written it down") {
                             model.dismissRecoveryKey()
                             dismiss()
                         }
+                        .disabled(!matches)
                     }
                 } else {
                     Section {
@@ -215,10 +244,27 @@ struct ReissueRecoveryKeyView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Close") {
-                        model.dismissRecoveryKey()
-                        dismiss()
+                        if model.pendingRecoveryKey != nil && !matches {
+                            confirmingClose = true
+                        } else {
+                            model.dismissRecoveryKey()
+                            dismiss()
+                        }
                     }
                 }
+            }
+            .confirmationDialog(
+                "Close without confirming your new key?",
+                isPresented: $confirmingClose,
+                titleVisibility: .visible
+            ) {
+                Button("Close anyway", role: .destructive) {
+                    model.dismissRecoveryKey()
+                    dismiss()
+                }
+                Button("Go back", role: .cancel) { }
+            } message: {
+                Text("The old key no longer works. If you have not written this one down, you will have no recovery key.")
             }
         }
         .vaultSheet(minHeight: 440)
