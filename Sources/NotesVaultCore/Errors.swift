@@ -17,6 +17,7 @@ public enum VaultError: Error, Equatable, LocalizedError {
     case unsupportedVaultFormat(Int)
     case vaultAlreadyExists(URL)
     case folderUnavailable(String)
+    case folderInsideAnotherVault(String, reason: String)
     case recoveryKeyMalformed(String)
     case indexUnreadable(String)
     case cryptoFailure(String)
@@ -49,6 +50,8 @@ public enum VaultError: Error, Equatable, LocalizedError {
             return "There is already a vault in \(url.lastPathComponent). Open it instead of creating a new one."
         case let .folderUnavailable(detail):
             return "The vault folder can't be reached: \(detail)"
+        case let .folderInsideAnotherVault(name, reason):
+            return "\"\(name)\" is inside a vault you already have — \(reason). Go back up and choose the folder you picked when you first set that vault up, rather than one inside it."
         case let .recoveryKeyMalformed(detail):
             return "That recovery key isn't valid: \(detail)"
         case let .indexUnreadable(detail):

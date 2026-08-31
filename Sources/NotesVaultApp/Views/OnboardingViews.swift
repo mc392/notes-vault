@@ -47,9 +47,16 @@ struct ChooseFolderView: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
 
-                Text("Pick an empty folder to start a new vault, or an existing vault folder to open it on this device.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Starting out? Pick an empty folder — inside iCloud Drive if you want your notes on more than one device.")
+                    Text("Already have a vault? Choose the same folder you picked the first time.")
+                    // The picker will let you walk into a vault's own folders, which look
+                    // empty and inviting from the inside and are not somewhere to put
+                    // anything. Saying so here is cheaper than the error that follows.
+                    Text("Either way, choose the folder itself rather than anything inside it. Once a vault exists, the folders within it hold nothing but encrypted files.")
+                }
+                .font(.footnote)
+                .foregroundStyle(.secondary)
             }
             .padding(24)
             .frame(maxWidth: 640, alignment: .leading)

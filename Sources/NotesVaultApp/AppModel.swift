@@ -94,12 +94,26 @@ public final class AppModel: ObservableObject {
 
     private func attach(to url: URL, rememberBookmark: Bool) throws {
         let fileStore = try FileSystemVaultStore(root: url)
+
+        // The picker will happily walk into a vault's own encrypted folders, which look
+        // empty and reasonable from the inside. Creating a vault in one of those buries it
+        // where the counsellor will never look, so refuse before anything is written — and
+        // before the folder is remembered as theirs.
+        let verdict = VaultFolderCheck.assess(
+            folderName: url.lastPathComponent,
+            pathComponents: url.pathComponents,
+            contents: (try? fileStore.contentsOfDirectory(at: [])) ?? []
+        )
+        if case let .insideAnotherVault(reason) = verdict {
+            throw VaultError.folderInsideAnotherVault(url.lastPathComponent, reason: reason)
+        }
+
         if rememberBookmark {
             try VaultBookmark.store(url)
         }
         files = fileStore
         folderName = url.lastPathComponent
-        phase = VaultBootstrap.isVault(fileStore) ? .locked : .createVault
+        phase = verdict == .existingVault ? .locked : .createVault
     }
 
     public func forgetFolder() {
