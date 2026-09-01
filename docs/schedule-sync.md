@@ -130,6 +130,23 @@ after that, "Sync schedules" re-reads whatever is at that path. So keeping the t
 step is: GroundWork writes over the file, Notes re-reads it. Neither app needs the other to
 be running, or on the same device.
 
+**The bookmark has to be made while the file's security scope is open.** A URL that comes
+back from the document picker is unusable outside a balanced
+`startAccessingSecurityScopedResource()` / `stopAccessingSecurityScopedResource()` pair,
+and `bookmarkData` is a use of the file like any other. Skipped, it fails with *"The file
+couldn't be opened because it doesn't exist"* — the sandbox refusing, worded as though the
+file were missing, which sends you looking in the wrong place entirely. The vault folder
+never showed this because `FileSystemVaultStore` is already holding the folder open by the
+time `VaultBookmark.store` runs; a file picked for one read has nothing holding it. Both
+bookmark stores now open the scope themselves.
+
+**A file in iCloud Drive may not be on the device yet.** A placeholder cannot be bookmarked
+any more than it can be read, so `RosterBookmark.store` asks iCloud for it and waits (which
+is why choosing a file runs off the main thread), and `RosterBookmark.read` downloads
+*before* testing whether the path exists — a placeholder does not sit at the name the user
+picked, it sits beside it as `.name.icloud`, so checking first calls every undownloaded
+file gone.
+
 Writing over the same file, per platform:
 
 | Where | How |
