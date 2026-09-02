@@ -43,7 +43,14 @@ targets:
         CODE_SIGN_STYLE: Automatic
         PRODUCT_NAME: GroundWork Notes
         MARKETING_VERSION: "0.1.0"
-        CURRENT_PROJECT_VERSION: "1"
+        # The build number, and Apple refuses one it has already accepted for this
+        # marketing version — a repeat is rejected at upload, after the archive, with a
+        # message about the version already existing rather than about this line. So it is
+        # bumped once per build that leaves the machine. Only an archive made by hand in
+        # Xcode reads it: testflight.yml passes its own number on the xcodebuild command
+        # line, taken from the tag, and Xcode Cloud substitutes its own when it is set to
+        # manage build numbers. Build 1 is on TestFlight; this is build 2.
+        CURRENT_PROJECT_VERSION: "2"
         SWIFT_VERSION: "5.9"
         SWIFT_STRICT_CONCURRENCY: minimal
         ENABLE_HARDENED_RUNTIME: YES

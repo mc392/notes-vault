@@ -381,13 +381,23 @@ public final class AppModel: ObservableObject {
 
     /// Called with the file the picker returned. Remembers it, then reads it — choosing the
     /// file and syncing it are one action as far as the counsellor is concerned.
+    ///
+    /// Bookmarking goes through `run` rather than being done here, because a file freshly
+    /// exported into iCloud Drive may still be a placeholder: it is worth waiting a few
+    /// seconds for, and waiting on the main thread is how an app gets killed by the
+    /// watchdog instead.
     public func chooseRosterFile(_ url: URL) async -> RosterSyncPlan? {
-        do {
-            try RosterBookmark.store(url)
-        } catch {
-            report(error)
-            return nil
+        var remembered = false
+        await run("Remembering that file…") { () -> Bool in
+            try RosterBookmark.store(url, downloadTimeout: 15)
+            return true
+        } then: { ok in
+            remembered = ok
         }
+        guard remembered else { return nil }
+        // `rosterFileName` reads UserDefaults rather than published state, so nothing has
+        // told the settings screen its name just changed.
+        objectWillChange.send()
         return await planScheduleSync()
     }
 

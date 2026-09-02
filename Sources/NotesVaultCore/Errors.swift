@@ -17,6 +17,10 @@ public enum VaultError: Error, Equatable, LocalizedError {
     case unsupportedVaultFormat(Int)
     case vaultAlreadyExists(URL)
     case folderUnavailable(String)
+    /// GroundWork's schedule file, which is not the vault and must not be described as
+    /// it — a counsellor told "the vault folder can't be reached" while syncing has been
+    /// told their notes are unreachable, which is both frightening and untrue.
+    case scheduleFileUnavailable(String)
     case folderInsideAnotherVault(String, reason: String)
     case recoveryKeyMalformed(String)
     case indexUnreadable(String)
@@ -50,6 +54,8 @@ public enum VaultError: Error, Equatable, LocalizedError {
             return "There is already a vault in \(url.lastPathComponent). Open it instead of creating a new one."
         case let .folderUnavailable(detail):
             return "The vault folder can't be reached: \(detail)"
+        case let .scheduleFileUnavailable(detail):
+            return "GroundWork's schedule file can't be used: \(detail)"
         case let .folderInsideAnotherVault(name, reason):
             return "\"\(name)\" is inside a vault you already have — \(reason). Go back up and choose the folder you picked when you first set that vault up, rather than one inside it."
         case let .recoveryKeyMalformed(detail):

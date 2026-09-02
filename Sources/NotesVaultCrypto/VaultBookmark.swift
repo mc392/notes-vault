@@ -19,7 +19,16 @@ public enum VaultBookmark {
         UserDefaults.standard.data(forKey: key) != nil
     }
 
+    /// The security scope is held while the bookmark is made: a picked URL is unusable
+    /// outside a balanced access pair, and `bookmarkData` is a use like any other. The
+    /// folder path happens to work without it today only because `FileSystemVaultStore` is
+    /// holding the folder open by the time this runs — which is not true of the refresh
+    /// inside `resolve()`, and was not true at all of the schedule file. See
+    /// `RosterBookmark.store`.
     public static func store(_ url: URL) throws {
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+
         #if os(macOS)
         let options: URL.BookmarkCreationOptions = [.withSecurityScope]
         #else
