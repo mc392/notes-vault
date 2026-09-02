@@ -11,6 +11,10 @@ struct ClientDetailView: View {
     /// The date a tapped suggestion put into the editor. Cleared when the sheet closes so
     /// the next plain "New note" opens on today rather than on a stale suggestion.
     @State private var composingDate: Date?
+    /// The note a check has just been passed for. Set only after `confirmIdentity` says
+    /// yes, and it is what drives the navigation — so there is no path to a note's contents
+    /// that does not go through the check.
+    @State private var opening: NoteIndexEntry?
 
     private var awaiting: [Date] { model.predictedSessions(for: code) }
 
@@ -94,13 +98,27 @@ struct ClientDetailView: View {
                     )
                 } else {
                     ForEach(entries) { entry in
-                        NavigationLink {
-                            // The list as it stands, so the note screen can step through
-                            // it without coming back here.
-                            NoteDetailView(entry: entry, siblings: entries)
+                        // A button rather than a NavigationLink: opening a note is one of
+                        // the two places inside an unlocked app that still asks. The list
+                        // itself — dates, word counts, which sessions exist — is behind the
+                        // unlock already; the words a client said are a step further in.
+                        Button {
+                            Task {
+                                if await model.confirmIdentity(reason: "Confirm it's you before opening this note") {
+                                    opening = entry
+                                }
+                            }
                         } label: {
-                            NoteRow(entry: entry, isSuperseded: supersededIDs.contains(entry.id))
+                            HStack {
+                                NoteRow(entry: entry, isSuperseded: supersededIDs.contains(entry.id))
+                                Spacer(minLength: 8)
+                                Image(systemName: "chevron.right")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain)
                     }
                 }
             } header: {
@@ -120,6 +138,11 @@ struct ClientDetailView: View {
             }
         }
         .navigationTitle(code.rawValue)
+        // The list as it stands is handed on, so the note screen can step between sessions
+        // without coming back here.
+        .navigationDestination(item: $opening) { entry in
+            NoteDetailView(entry: entry, siblings: entries)
+        }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {

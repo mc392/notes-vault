@@ -150,7 +150,9 @@ What only hardware can answer, and what a simulator would lie about:
   the vault on the phone with data back on. `FileSystemVaultStore.ensureDownloaded` is
   written for exactly this and has never faced it.
 - **Face ID / Touch ID.** `NSFaceIDUsageDescription` is set; biometrics do not meaningfully
-  exist in a simulator.
+  exist in a simulator. A simulated non-match can be sent (`notifyutil -p
+  com.apple.BiometricKit_Sim.pearl.nomatch`), which exercises the decline path, but a real
+  *failed* check — wrong face, then wrong passcode — only happens on hardware.
 - **Two devices, both offline, both writing.** Write a note for the same client on each with
   sync off, then let them both sync. Both notes must survive — this is the append-only claim,
   and the property the whole file format was chosen for.
@@ -179,6 +181,8 @@ through this". That means these all pass on real hardware, not just in the simul
 | 13 | Import a folder of notes with Wi-Fi off; check the raw folder afterwards | The import claim, demonstrated the way the screen says it can be |
 | 14 | Export a client's Apple Notes as Markdown into a folder, then import that folder | The route most people will actually take, end to end |
 | 15 | Import notes with a `Session number:` header, store it as a field, read it back | Metadata becomes metadata rather than prose |
+| 16 | Background the app, reopen it: Face ID is asked for, and the app switcher card is the splash | The lock policy, and the privacy shield |
+| 17 | Fail Face ID three times against a note, then fail the passcode | "That check didn't pass", and the passphrase is the only way back |
 
 ### Repository and visibility — decided
 
@@ -228,7 +232,12 @@ NotesVaultCrypto      the platform edge
   VaultBookmark       remembering which folder, across launches
 
 NotesVaultApp         SwiftUI, one AppModel, everything serialised through it
+  SplashView          the launch screen, and the shield over a backgrounded app
+  AppModel            the lock policy lives here: `confirmIdentity`, `becameActive`
 ```
+
+`LockPolicy` (Core) and `DeviceCheck` (Crypto) are the two new pieces of that picture:
+where the app asks who you are, and how it asks. See "When the app asks who you are".
 
 ### What the folder actually looks like
 
@@ -253,6 +262,53 @@ d/D7/F3KQ8W2M.../
 Folder names, filenames, dates, client codes and content are all inside the encryption
 boundary. The raw folder shows how many files exist and roughly how big they are, and
 nothing else.
+
+---
+
+## When the app asks who you are
+
+Rationalised on 31 August 2026. There is one rule, and it is short: **the check is at the
+door.** Coming back to the app is the door; once inside, the only two things worth asking
+about again are the clinical content itself and the settings that decide who can get in.
+
+| Moment | What happens |
+|---|---|
+| Cold launch | Splash → the unlock screen, which starts Face ID / Touch ID itself if it is set up. Nothing of the vault is on screen until it opens |
+| Coming back to the app | A check — Face ID, Touch ID or the device passcode — unless the counsellor has chosen a grace period and is inside it. **Straight away is the default** |
+| Away longer than 10 minutes (or longer than a longer grace) | The vault key is dropped: a real unlock, not a check |
+| Opening a note | A check, unless one passed in the last minute |
+| Changing the passphrase, issuing a recovery key, exporting everything, forgetting the folder, destroying a client, changing the "Ask again" setting | A check |
+| Everything else — the client list, retention, note fields, writing a note | No check. It is behind the door already |
+
+Three properties this is meant to have, all of which were missing before:
+
+1. **A failed check is never survivable.** `DeviceCheck` separates a *decline* — a normal
+   choice, which costs the counsellor the action they asked for and nothing else — from a
+   *failure*, a wrong face or a wrong passcode. A failure drops the key immediately and the
+   unlock screen says so ("That check didn't pass"), with the biometric unlock withheld
+   until the passphrase has been typed. A check that can be shrugged off is decoration.
+2. **Leaving really is leaving.** `LockPolicy.reopenGrace` defaults to zero, so reopening
+   asks. It is a setting because a counsellor flicking between this and a calendar twenty
+   times an hour is a real way of working, and an exhausting app is one that gets left
+   unlocked. `.inactive` and `.background` are handled separately: an app with a Face ID
+   prompt in front of it is inactive but has not gone anywhere, and treating that as leaving
+   would relock the app in the middle of the check meant to keep it open.
+3. **Nothing is visible until it has been paid for.** `SplashView` covers the app from the
+   moment it leaves the foreground until a check has passed — so the card in the app
+   switcher is the launch screen. On iOS it goes up in a window of its own
+   (`PrivacyShieldWindow`) above `.alert`, because a sheet — the note editor mid-sentence,
+   an import — is presented above the root view and would otherwise still be in the snapshot
+   iOS takes.
+
+A device with no biometry and no passcode is the one place this bends: it cannot be asked,
+so in-app checks pass (the passphrase was typed to get in, and demanding it before every
+note ends with it taped to the back of the phone) while *reopening* still falls back to the
+passphrase. Settings says so in as many words.
+
+The one path the simulator cannot exercise is a genuine `LAError.authenticationFailed` —
+biometry there falls through to the passcode sheet — so the "That check didn't pass" screen
+has been reasoned about and unit-tested at the mapping (`DeviceCheckTests`) but not seen on
+hardware. It belongs in the acceptance run.
 
 ---
 

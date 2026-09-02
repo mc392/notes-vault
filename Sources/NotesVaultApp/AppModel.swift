@@ -26,7 +26,37 @@ public final class AppModel: ObservableObject {
         case unlocked
     }
 
+    /// Why the vault is locked, which is the only thing that makes the unlock screen say
+    /// anything other than "Unlock". A failed check has to look different from a quiet
+    /// timeout, or a counsellor cannot tell "you left it a while" from "somebody tried".
+    public enum LockReason: Equatable, Sendable {
+        /// Locked on purpose, or never unlocked yet.
+        case manual
+        /// The app was away long enough that the key was dropped.
+        case away
+        /// Face ID, Touch ID or the passcode was asked for and did not pass.
+        case checkFailed
+        /// The device has no biometry and no passcode, so it cannot be asked at all.
+        case checkUnavailable
+
+        /// Whether the unlock screen may offer — and start — the biometric unlock.
+        ///
+        /// After a failed check it may not: the whole point of failing is that the next way
+        /// in is the passphrase, and offering the same check again would make the failure
+        /// cost nothing.
+        public var allowsBiometricUnlock: Bool {
+            self == .manual || self == .away
+        }
+    }
+
     @Published public private(set) var phase: Phase = .starting
+    @Published public private(set) var lockReason: LockReason = .manual
+    /// Whether the splash is covering the app.
+    ///
+    /// Raised the moment the app leaves the foreground — so the card in the app switcher is
+    /// the launch screen and not a client's notes — and kept up while a resume check runs,
+    /// so nothing is on screen until the check has passed.
+    @Published public private(set) var isShielded = false
     @Published public private(set) var index = VaultIndex.empty
     @Published public private(set) var issues: [VaultIssue] = []
     @Published public private(set) var folderName: String?
@@ -41,6 +71,9 @@ public final class AppModel: ObservableObject {
     @Published public var noteFields = NoteFieldSettings.default {
         didSet { persistNoteFields() }
     }
+    /// When the app asks for a check. Changed through `setReopenGrace`, which asks for one
+    /// first — a lock setting anybody can loosen is not a lock setting.
+    @Published public private(set) var lockPolicy = LockPolicy.default
 
     /// The name this device writes into every note it creates.
     public var deviceDisplayName: String { DeviceIdentity.current }
@@ -50,6 +83,22 @@ public final class AppModel: ObservableObject {
         guard let vaultID else { return false }
         return KeychainStore.hasStoredPassphrase(vaultID: vaultID)
     }
+
+    /// Whether this device can be asked to confirm the counsellor is present at all, and
+    /// what it would ask with. Both are read fresh: Face ID can be turned off in the
+    /// device's own settings between one launch and the next.
+    public var deviceCheckAvailable: Bool { DeviceCheck.isAvailable }
+    public var deviceCheckMethod: DeviceCheck.Method { DeviceCheck.method }
+
+    /// When the last check passed. Nil while locked, and cleared by every lock, so a check
+    /// can never outlive the session it was taken in.
+    private var lastCheckPassed: Date?
+    /// When the app left the foreground. Only set for a real backgrounding — a system
+    /// prompt makes the app inactive without it having gone anywhere.
+    private var awaySince: Date?
+    /// True while a check is on screen, so the app going inactive *because of that check*
+    /// is not mistaken for the counsellor leaving.
+    private var checkInFlight = false
 
     private var files: FileSystemVaultStore?
     private var session: VaultSession?
@@ -64,10 +113,12 @@ public final class AppModel: ObservableObject {
     private static let queue = DispatchQueue(label: "com.charlottebloor.groundworknotes.vault", qos: .userInitiated)
     private static let retentionKey = "retention.policy"
     private static let noteFieldsKey = "note.fields"
+    private static let lockPolicyKey = "lock.policy"
 
     public init() {
         loadRetentionPolicy()
         loadNoteFields()
+        loadLockPolicy()
     }
 
     // MARK: - Lifecycle
@@ -173,6 +224,11 @@ public final class AppModel: ObservableObject {
             if rememberWithBiometrics {
                 KeychainStore.storePassphrase(passphrase, vaultID: session.configuration.jti)
             }
+            // Typing the passphrase *is* a check, and the strongest one this app has, so it
+            // stands for the next minute like any other — opening a note straight after
+            // unlocking does not ask twice.
+            self.lastCheckPassed = Date()
+            self.lockReason = .manual
             self.phase = .unlocked
             Task { await self.refreshIndex(force: false) }
         }
@@ -197,6 +253,10 @@ public final class AppModel: ObservableObject {
         case .cancelled:
             // Declining is a normal choice — the passphrase field is still right there.
             break
+        case .failed:
+            // Somebody's face or passcode did not match. The passphrase is the only way in
+            // from here: `lockReason` stops the screen offering the check again.
+            lockReason = .checkFailed
         case .unavailable:
             errorMessage = "Face ID unlock isn't set up any more on this device — use your passphrase, then turn it back on from the unlock screen."
             KeychainStore.remove(.passphrase, vaultID: configuration.jti)
@@ -211,7 +271,9 @@ public final class AppModel: ObservableObject {
     /// `FileSystemVaultStore`, and there is no re-acquire path — relinquishing here would
     /// leave a locked vault unable to unlock again without choosing the folder afresh.
     /// `relinquish()` is only called from `forgetFolder()`, where the store is discarded too.
-    public func lock() {
+    public func lock(reason: LockReason = .manual) {
+        lockReason = reason
+        lastCheckPassed = nil
         session = nil
         store = nil
         index = .empty
@@ -224,6 +286,140 @@ public final class AppModel: ObservableObject {
         self.vaultID = session.configuration.jti
         self.store = VaultStore(engine: session.engine, files: files, deviceName: DeviceIdentity.current)
         self.indexStore = IndexStore(vaultID: session.configuration.jti)
+    }
+
+    // MARK: - Checks
+    //
+    // Where the app asks "is this still you?", and nowhere else:
+    //
+    //   * coming back to the app, unless the counsellor has set a grace period and is
+    //     inside it (`becameActive`);
+    //   * opening a note, which is the clinical content itself;
+    //   * changing something that decides who gets in — the passphrase, the recovery key,
+    //     this setting, the folder, an export, a destruction.
+    //
+    // Everywhere else the door has already been answered. A check that fails is never
+    // survivable: it drops the key and puts the passphrase in the way, because a check
+    // that can be shrugged off is decoration.
+
+    /// Confirms the counsellor is present, for one action inside an already-unlocked app.
+    ///
+    /// Returns whether the action may go ahead. A refusal is complete — the caller must do
+    /// nothing at all — and after a *failed* check there is no longer an unlocked app to
+    /// return to.
+    public func confirmIdentity(reason: String) async -> Bool {
+        guard phase == .unlocked else { return false }
+        if LockPolicy.checkStands(lastPassed: lastCheckPassed) { return true }
+
+        // A device with no biometry and no passcode cannot be asked, and an unlocked vault
+        // is already as far as this app's own evidence goes: the passphrase was typed to
+        // get here. Refusing everything would mean a passphrase before every note, which
+        // ends with the passphrase taped to the back of the phone. Settings says plainly
+        // that this device has no check.
+        guard DeviceCheck.isAvailable else { return true }
+
+        checkInFlight = true
+        let outcome = await DeviceCheck.confirm(reason: reason)
+        checkInFlight = false
+
+        switch outcome {
+        case .passed:
+            lastCheckPassed = Date()
+            return true
+        case .cancelled:
+            // Changed their mind, or handed the phone back. Costs them this action and
+            // nothing else — nothing was shown, so nothing needs taking away.
+            return false
+        case .failed:
+            lock(reason: .checkFailed)
+            return false
+        case .unavailable:
+            // Biometry and passcode both disappeared between `isAvailable` and here.
+            lock(reason: .checkUnavailable)
+            return false
+        }
+    }
+
+    /// The app is leaving the foreground.
+    ///
+    /// The shield goes up on the way out rather than on the way back, so the app switcher's
+    /// card is the launch screen. `awaySince` is only set for a real backgrounding: an
+    /// inactive app is often just an app with a system prompt in front of it.
+    public func enterBackground(reallyAway: Bool, at date: Date = Date()) {
+        isShielded = true
+        guard reallyAway, !checkInFlight, awaySince == nil else { return }
+        awaySince = date
+    }
+
+    /// The app is back on screen. Resolves whatever the time away costs before the shield
+    /// comes down, so nothing is visible until it has been paid.
+    public func becameActive(at date: Date = Date()) async {
+        // A check is on screen: this is the prompt returning, not the counsellor. The check
+        // itself will take the shield down when it finishes.
+        guard !checkInFlight else { return }
+
+        guard let since = awaySince else {
+            isShielded = false
+            return
+        }
+        awaySince = nil
+
+        guard phase == .unlocked else {
+            // Already locked: the unlock screen is the check. Start the biometric unlock
+            // rather than making them reach for a button they were always going to press.
+            isShielded = false
+            await unlockIfBiometricsOffered()
+            return
+        }
+
+        switch lockPolicy.resume(afterAwayFor: date.timeIntervalSince(since)) {
+        case .straightBackIn:
+            isShielded = false
+        case .needsCheck:
+            // Deliberately not the grace period: coming back is a new arrival, whatever
+            // happened a minute ago inside the app.
+            lastCheckPassed = nil
+            checkInFlight = true
+            let outcome = await DeviceCheck.confirm(reason: "Confirm it's you to open your notes")
+            checkInFlight = false
+            switch outcome {
+            case .passed:
+                lastCheckPassed = Date()
+            case .cancelled:
+                lock(reason: .away)
+            case .failed:
+                lock(reason: .checkFailed)
+            case .unavailable:
+                lock(reason: .checkUnavailable)
+            }
+            isShielded = false
+        case .needsUnlock:
+            lock(reason: .away)
+            isShielded = false
+            await unlockIfBiometricsOffered()
+        }
+    }
+
+    /// Starts the biometric unlock when the lock screen is entitled to offer it, so a
+    /// reopen is one glance rather than a glance and a tap.
+    public func unlockIfBiometricsOffered() async {
+        guard phase == .locked, lockReason.allowsBiometricUnlock, biometricsEnrolled else { return }
+        checkInFlight = true
+        await unlockWithBiometrics()
+        checkInFlight = false
+    }
+
+    /// Changes how long the app may be away before it asks again — itself a check, since a
+    /// lock setting anyone holding the phone could loosen is not a lock setting.
+    @discardableResult
+    public func setReopenGrace(_ seconds: TimeInterval) async -> Bool {
+        guard lockPolicy.reopenGrace != seconds else { return true }
+        guard await confirmIdentity(reason: "Confirm it's you before changing when the app asks again") else {
+            return false
+        }
+        lockPolicy.reopenGrace = seconds
+        persistLockPolicy()
+        return true
     }
 
     // MARK: - Index
@@ -660,5 +856,16 @@ public final class AppModel: ObservableObject {
     private func persistNoteFields() {
         guard let data = try? JSONEncoder().encode(noteFields) else { return }
         UserDefaults.standard.set(data, forKey: Self.noteFieldsKey)
+    }
+
+    private func loadLockPolicy() {
+        guard let data = UserDefaults.standard.data(forKey: Self.lockPolicyKey),
+              let stored = try? JSONDecoder().decode(LockPolicy.self, from: data) else { return }
+        lockPolicy = stored
+    }
+
+    private func persistLockPolicy() {
+        guard let data = try? JSONEncoder().encode(lockPolicy) else { return }
+        UserDefaults.standard.set(data, forKey: Self.lockPolicyKey)
     }
 }

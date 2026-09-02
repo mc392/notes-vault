@@ -9,8 +9,10 @@ final class KeychainStoreTests: XCTestCase {
         XCTAssertEqual(KeychainStore.passphraseResult(for: errSecUserCanceled), .cancelled)
     }
 
-    func testAuthFailedMapsToCancelled() {
-        XCTAssertEqual(KeychainStore.passphraseResult(for: errSecAuthFailed), .cancelled)
+    /// Separated from a cancel on purpose: a decline leaves the unlock screen as it was, a
+    /// failed check makes the passphrase the only way back in.
+    func testAuthFailedMapsToFailed() {
+        XCTAssertEqual(KeychainStore.passphraseResult(for: errSecAuthFailed), .failed)
     }
 
     func testItemNotFoundMapsToUnavailable() {

@@ -76,8 +76,11 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSApplicationCategoryType: public.app-category.business
+        # The native launch screen, on screen for the moment before SwiftUI draws
+        # SplashView over the top of it. Painted in the same sage as the splash, light
+        # and dark, so the handover is invisible rather than a white flash.
         UILaunchScreen:
-          UIColorName: ""
+          UIColorName: LaunchBackground
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationPortraitUpsideDown
@@ -86,8 +89,9 @@ targets:
         # Required before LocalAuthentication will prompt at all on iOS. Without it the
         # biometric unlock fails silently at runtime.
         NSFaceIDUsageDescription: >-
-          Face ID unlocks your clinical notes on this device. Your passphrase is stored in
-          this device's keychain and never leaves it.
+          Face ID unlocks your clinical notes when you open the app, and confirms it is you
+          before a note is opened or an access setting is changed. Your passphrase is stored
+          in this device's keychain and never leaves it.
         # The app makes no network connections of its own. Declaring this makes that
         # checkable rather than a claim in the marketing copy.
         NSAppTransportSecurity:
