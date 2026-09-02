@@ -48,6 +48,15 @@ git push && git push --tags
 The `-b<number>` suffix is what the workflow reads as the build number. Keep incrementing
 it; every upload needs a number Apple has not seen for this version.
 
+**The runner image decides the SDK, and Apple polices it.** Uploads built against anything
+older than the iOS 26 SDK are refused — *"This app was built with the iOS 17.5 SDK. All
+iOS and iPadOS apps must be built with the iOS 26 SDK or later"* — and that rejection
+arrives at the very last step, after a successful archive, sign and export. `macos-14`'s
+default Xcode is 15.4, which is exactly that. The workflow therefore runs on a newer image
+and selects the newest Xcode on it explicitly, checking the SDK version up front so a
+too-old image costs seconds rather than five minutes. If GitHub retires an image or ships
+one without Xcode 26, that check is what will say so, and it prints the versions available.
+
 **From your own Mac instead** (and the fallback if the workflow misbehaves):
 
 ```bash
@@ -66,8 +75,22 @@ the version rather than about the setting. Bump, commit, `xcodegen generate`, th
 
 The workflow needs an App Store Connect API key — the same key both apps use, so if you
 have already set this up for GroundWork, reuse it. App Store Connect → Users and Access →
-Integrations → App Store Connect API → **Team key**, role **App Manager**, download the
-`.p8` (one chance only).
+Integrations → App Store Connect API → **Team key**, role **Admin**, download the `.p8`
+(one chance only).
+
+**The role must be Admin, not App Manager.** App Manager cannot reach cloud-managed
+distribution certificates, and the export step fails with *"Cloud signing permission
+error — You haven't been given access to cloud-managed distribution certificates"*
+followed by *"No profiles for com.charlottebloor.groundworknotes were found"*. Neither
+message mentions the key or its role, which is what makes it worth writing down. Worse,
+the failed run leaves behind an Apple **Development** certificate it created while
+casting about for something to sign with; its private key died with that runner, and a
+later run can trip over it with *"your account already has a signing certificate for this
+machine, but its private key is not installed"*. If that happens, revoke that certificate
+— and only that one — at
+<https://developer.apple.com/account/resources/certificates/list>, checking the created
+date so an Apple **Distribution** certificate, or a development one belonging to a real
+Mac, is left alone.
 
 Add three secrets under GitHub → Settings → Secrets and variables → Actions:
 `APP_STORE_CONNECT_KEY_ID`, `APP_STORE_CONNECT_ISSUER_ID`,
