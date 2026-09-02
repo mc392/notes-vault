@@ -56,6 +56,12 @@ xcodegen generate && open NotesVault.xcodeproj
 
 then *Any iOS Device* → Product → Archive → Distribute App → TestFlight & App Store.
 
+**Archiving by hand reads `CURRENT_PROJECT_VERSION` from `project.yml`, so bump it first.**
+The sentence above about CI taking the number from the tag is true of CI only; nothing
+increments it for a hand-made archive, and Apple rejects a build number it has already
+accepted for this marketing version — at upload, after the archive, with a message about
+the version rather than about the setting. Bump, commit, `xcodegen generate`, then archive.
+
 ## One-time setup
 
 The workflow needs an App Store Connect API key — the same key both apps use, so if you
