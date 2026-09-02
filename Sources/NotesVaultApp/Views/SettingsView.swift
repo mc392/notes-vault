@@ -59,7 +59,10 @@ struct SettingsView: View {
 
             Section {
                 Button {
-                    exporting = true
+                    // An export writes every note out in plain text. That is the single
+                    // biggest thing anyone holding this phone could do with it, so it is
+                    // one of the actions that asks.
+                    gated("Confirm it's you before exporting every note") { exporting = true }
                 } label: {
                     Label("Export everything", systemImage: "square.and.arrow.up")
                 }
@@ -105,14 +108,44 @@ struct SettingsView: View {
             }
 
             Section {
-                Button("Change passphrase") { changingPassphrase = true }
-                Button("Issue a new recovery key") { reissuingRecoveryKey = true }
+                Picker(
+                    "Ask again",
+                    selection: Binding(
+                        get: { model.lockPolicy.reopenGrace },
+                        set: { seconds in Task { await model.setReopenGrace(seconds) } }
+                    )
+                ) {
+                    ForEach(LockPolicy.graceChoices, id: \.self) { seconds in
+                        Text(LockPolicy.graceLabel(seconds)).tag(seconds)
+                    }
+                }
                 if model.biometricsEnrolled {
-                    Text("Face ID or Touch ID is set up on this device.")
+                    Text("\(model.deviceCheckMethod.displayName) is set up on this device.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
+                if !model.deviceCheckAvailable {
+                    Label(
+                        "This device has no Face ID, Touch ID or passcode set up, so it cannot check who is holding it. Add one in the device's own settings — until then, coming back to the app means typing your passphrase.",
+                        systemImage: "exclamationmark.triangle"
+                    )
+                    .font(.footnote)
+                    .foregroundStyle(.orange)
+                }
                 Button("Lock now") { model.lock() }
+            } header: {
+                Text("When the app asks")
+            } footer: {
+                Text("How long GroundWork Notes may be off screen before it asks again. Straight away is the safest and is what it does unless you change it. Once you are in, it asks in only two more places: opening a note, and changing anything in this section.")
+            }
+
+            Section {
+                Button("Change passphrase") {
+                    gated("Confirm it's you before changing your passphrase") { changingPassphrase = true }
+                }
+                Button("Issue a new recovery key") {
+                    gated("Confirm it's you before issuing a new recovery key") { reissuingRecoveryKey = true }
+                }
             } header: {
                 Text("Access")
             } footer: {
@@ -120,7 +153,9 @@ struct SettingsView: View {
             }
 
             Section {
-                Button("Use a different folder", role: .destructive) { model.forgetFolder() }
+                Button("Use a different folder", role: .destructive) {
+                    gated("Confirm it's you before forgetting this vault") { model.forgetFolder() }
+                }
             } footer: {
                 Text("Forgets where the vault is on this device. Nothing in the folder is touched, and the notes stay exactly where they are. Face ID unlock for this vault is switched off on this device too.")
             }
@@ -144,6 +179,17 @@ struct SettingsView: View {
         }
         .sheet(isPresented: $changingPassphrase) { ChangePassphraseView() }
         .sheet(isPresented: $reissuingRecoveryKey) { ReissueRecoveryKeyView() }
+    }
+
+    /// Runs `action` only if the counsellor confirms it is them.
+    ///
+    /// A refused check does nothing at all — no sheet, no alert, no "are you sure?". If it
+    /// *failed* rather than being declined, the vault is already locked behind this screen
+    /// and the unlock screen says why, so there is nothing left here to report.
+    private func gated(_ reason: String, _ action: @escaping () -> Void) {
+        Task {
+            if await model.confirmIdentity(reason: reason) { action() }
+        }
     }
 }
 

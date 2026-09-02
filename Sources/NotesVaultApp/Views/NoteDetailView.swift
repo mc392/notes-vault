@@ -39,12 +39,18 @@ struct NoteDetailView: View {
     /// course of work.
     private var positionLabel: String { "Note \(siblings.count - position) of \(siblings.count)" }
 
+    /// Stepping to the next session is opening another note, so it asks the same way the
+    /// list does. In practice it rarely prompts: a check taken a moment ago still stands,
+    /// which is what makes reading through a course of work one act rather than twelve.
     private func move(by offset: Int) {
         let target = position + offset
         guard siblings.indices.contains(target) else { return }
-        note = nil
-        loadFailure = nil
-        position = target
+        Task {
+            guard await model.confirmIdentity(reason: "Confirm it's you before opening this note") else { return }
+            note = nil
+            loadFailure = nil
+            position = target
+        }
     }
 
     var body: some View {

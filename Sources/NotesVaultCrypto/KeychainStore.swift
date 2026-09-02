@@ -60,10 +60,12 @@ public enum KeychainStore {
     }
 
     /// The outcome of asking the keychain for the biometric-wrapped passphrase: the value
-    /// itself, a normal decline, or nothing usable being there any more.
+    /// itself, a normal decline, a check that did not pass, or nothing usable being there
+    /// any more.
     public enum PassphraseResult: Equatable {
         case value(String)
         case cancelled
+        case failed
         case unavailable
     }
 
@@ -72,10 +74,14 @@ public enum KeychainStore {
     /// or a device to prompt Face ID on.
     static func passphraseResult(for status: OSStatus) -> PassphraseResult {
         switch status {
-        case errSecUserCanceled, errSecAuthFailed:
-            // `errSecAuthFailed` also covers a cancel-like interaction (e.g. dismissing the
-            // sheet rather than tapping Cancel) — declining is a normal choice either way.
+        case errSecUserCanceled:
             return .cancelled
+        case errSecAuthFailed:
+            // A wrong face followed by a wrong passcode, or the sheet dismissed after a
+            // failure. It used to be folded in with a plain cancel; it is separated now
+            // because the two deserve different answers — a decline leaves the unlock
+            // screen as it was, a failed check makes the passphrase the only way back in.
+            return .failed
         default:
             return .unavailable
         }

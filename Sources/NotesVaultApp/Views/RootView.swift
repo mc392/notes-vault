@@ -8,7 +8,10 @@ struct RootView: View {
         Group {
             switch model.phase {
             case .starting:
-                LoadingView(message: "Looking for your vault…")
+                // The splash, not a spinner: until the vault has been found and unlocked
+                // there is nothing anyone is entitled to see, and a screen that shows
+                // nothing should still look like the app.
+                SplashView(status: "Looking for your vault…")
             case .chooseFolder:
                 ChooseFolderView()
             case .createVault:
@@ -26,6 +29,17 @@ struct RootView: View {
                 BusyOverlay(message: message)
             }
         }
+        // Raised the instant the app leaves the foreground and while a resume check is on
+        // screen. On iOS a second copy goes up in its own window (`PrivacyShieldWindow`),
+        // which is what covers any sheet presented above this view; this one covers the app
+        // itself, and is the whole shield on the Mac.
+        .overlay {
+            if model.isShielded {
+                SplashView()
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.2), value: model.isShielded)
         .alert(
             "Something went wrong",
             isPresented: Binding(
@@ -61,19 +75,6 @@ struct MainView: View {
             }
             .tabItem { Label("Settings", systemImage: "gearshape") }
         }
-    }
-}
-
-struct LoadingView: View {
-    let message: String
-
-    var body: some View {
-        VStack(spacing: 16) {
-            ProgressView()
-            Text(message)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

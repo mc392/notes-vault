@@ -79,6 +79,13 @@ struct DestroyClientView: View {
                 Section {
                     Button(role: .destructive) {
                         Task {
+                            // The last gate, after the acknowledgement, the typed code and
+                            // the arming delay: the device itself confirming who is holding
+                            // it. Everything above this proves the tap was deliberate; only
+                            // this proves whose deliberation it was.
+                            guard await model.confirmIdentity(
+                                reason: "Confirm it's you before destroying \(client.code.rawValue)'s records"
+                            ) else { return }
                             await model.destroy(client: client.code)
                             onDestroyed()
                             dismiss()

@@ -1,23 +1,67 @@
 import SwiftUI
 import NotesVaultCore
 
+/// The one door into the vault, and — since the app now asks for a check on every reopen —
+/// the screen a counsellor sees most often after the client list.
+///
+/// It says why it is being shown. "Unlock" after a quiet timeout and "that check did not
+/// pass" are different events, and the second one is the app reporting that somebody
+/// failed a Face ID or passcode prompt against these records. Rolling both into one
+/// friendly heading would hide the only evidence of it there is.
 struct UnlockView: View {
     @EnvironmentObject private var model: AppModel
     @State private var passphrase = ""
     @State private var rememberWithBiometrics = false
     @State private var showingRecovery = false
 
+    /// Whether the biometric unlock may be offered at all: after a failed check the
+    /// passphrase is the only way back in, and after an unavailable one there is nothing
+    /// to offer.
+    private var offersBiometrics: Bool {
+        model.biometricsEnrolled && model.lockReason.allowsBiometricUnlock
+    }
+
+    private var title: String {
+        switch model.lockReason {
+        case .manual, .away: return "Unlock"
+        case .checkFailed: return "That check didn't pass"
+        case .checkUnavailable: return "This device can't check it's you"
+        }
+    }
+
+    private var explanation: String? {
+        switch model.lockReason {
+        case .manual:
+            return nil
+        case .away:
+            return "The app was away long enough to lock itself."
+        case .checkFailed:
+            return "\(model.deviceCheckMethod.displayName) was asked for and did not pass, so your notes were locked. Your passphrase is the only way back in — \(model.deviceCheckMethod.displayName) works again once you have used it."
+        case .checkUnavailable:
+            return "Face ID, Touch ID or a passcode has to be set up in this device's own settings before the app can check it is you. Until then, your passphrase is what opens the vault."
+        }
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Unlock")
+                    Text(title)
                         .font(.largeTitle.bold())
                     if let folderName = model.folderName {
                         Label(folderName, systemImage: "folder")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
+                }
+
+                if let explanation {
+                    Label(explanation, systemImage: model.lockReason == .checkFailed ? "exclamationmark.shield" : "info.circle")
+                        .font(.footnote)
+                        .foregroundStyle(model.lockReason == .checkFailed ? Color.orange : Color.secondary)
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 }
 
                 SecureField("Passphrase", text: $passphrase)
@@ -35,7 +79,7 @@ struct UnlockView: View {
                     .controlSize(.large)
                     .disabled(passphrase.isEmpty)
 
-                if model.biometricsEnrolled {
+                if offersBiometrics {
                     Button {
                         Task { await model.unlockWithBiometrics() }
                     } label: {
@@ -58,6 +102,10 @@ struct UnlockView: View {
         .sheet(isPresented: $showingRecovery) {
             RecoverAccessView()
         }
+        // Asks as soon as the screen appears rather than waiting to be asked. Reopening the
+        // app should cost one glance; the button below is for a second attempt, or for
+        // somebody who declined the first.
+        .task { await model.unlockIfBiometricsOffered() }
     }
 
     private func unlock() {
