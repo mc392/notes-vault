@@ -26,11 +26,32 @@ concurrency:
 jobs:
   upload:
     name: Build and upload to TestFlight
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v4
+
+      # Apple refuses any upload built against an SDK older than iOS 26, and a runner
+      # image's default Xcode is whatever that image happens to ship — macos-14's is
+      # Xcode 15.4, the iOS 17.5 SDK. That archives, signs and exports perfectly and is
+      # then rejected by App Store Connect at the very last step, five minutes in, with a
+      # message about the SDK rather than about the runner. So the newest Xcode on the
+      # image is selected here, and a too-old one fails the job in seconds, before any of
+      # that work, printing what the image actually has to choose from.
+      - name: Select Xcode
+        run: |
+          newest=$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)
+          [ -n "$newest" ] || newest=/Applications/Xcode.app
+          sudo xcode-select -s "$newest/Contents/Developer"
+          xcodebuild -version
+          sdk=$(xcrun --sdk iphoneos --show-sdk-version)
+          echo "iOS SDK: $sdk (from $newest)"
+          if [ "${sdk%%.*}" -lt 26 ]; then
+            echo "::error::iOS SDK $sdk is too old — App Store Connect requires 26 or later. Xcode versions on this runner image:"
+            ls -d /Applications/Xcode*.app
+            exit 1
+          fi
 
       # The tests are the gate. This app's whole claim is that what lands on disk is a
       # genuine Cryptomator vault, and the crypto tests are the only thing asserting it —
