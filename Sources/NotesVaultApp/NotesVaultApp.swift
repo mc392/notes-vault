@@ -81,7 +81,12 @@ final class PrivacyShieldWindow {
         window.rootViewController = UIHostingController(rootView: SplashView())
         // Not `makeKeyAndVisible`: this window shows something and accepts nothing, and
         // taking key status from the app would move the keyboard's focus out of a
-        // half-typed note.
+        // half-typed note. "Accepts nothing" has to be said to it as well as about it —
+        // a window with a view controller in it swallows every tap by default, so a shield
+        // left up by mistake would present as an app that has frozen rather than as a
+        // cosmetic one. Touches pass through to the app it is covering, which is invisible
+        // anyway while it is covered.
+        window.isUserInteractionEnabled = false
         window.isHidden = false
         self.window = window
     }

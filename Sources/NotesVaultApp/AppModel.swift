@@ -320,7 +320,7 @@ public final class AppModel: ObservableObject {
 
         checkInFlight = true
         let outcome = await DeviceCheck.confirm(reason: reason)
-        checkInFlight = false
+        endCheck()
 
         switch outcome {
         case .passed:
@@ -346,9 +346,30 @@ public final class AppModel: ObservableObject {
     /// card is the launch screen. `awaySince` is only set for a real backgrounding: an
     /// inactive app is often just an app with a system prompt in front of it.
     public func enterBackground(reallyAway: Bool, at date: Date = Date()) {
+        // A check of our own makes the app inactive too — a Face ID prompt is a system
+        // window in front of it — and shielding then is how the app ends up showing the
+        // launch screen at somebody who never left. Only a real backgrounding shields
+        // during a check; `.background` still does, so swiping away mid-prompt is covered.
+        if !reallyAway && checkInFlight { return }
         isShielded = true
         guard reallyAway, !checkInFlight, awaySince == nil else { return }
         awaySince = date
+    }
+
+    /// Ends a check, and takes the shield down with it.
+    ///
+    /// Whoever starts a check has to finish it, because `becameActive` will not: it returns
+    /// immediately while a check is in flight, unable to tell "the prompt came back" from
+    /// "the counsellor did". The two events race — the scene turns active as the prompt
+    /// closes, and the check's answer arrives on a hop back to the main actor — so a check
+    /// that left the shield to `becameActive` would strand it up whenever the scene won.
+    /// That is the stuck launch screen: the app open behind it, the shield accepting the
+    /// taps, and the only way out backgrounding it, which asks for Face ID again.
+    private func endCheck() {
+        checkInFlight = false
+        // Not while the app is genuinely away: there the shield is doing its actual job,
+        // and `becameActive` owns taking it down once the time away has been paid for.
+        if awaySince == nil { isShielded = false }
     }
 
     /// The app is back on screen. Resolves whatever the time away costs before the shield
@@ -381,7 +402,7 @@ public final class AppModel: ObservableObject {
             lastCheckPassed = nil
             checkInFlight = true
             let outcome = await DeviceCheck.confirm(reason: "Confirm it's you to open your notes")
-            checkInFlight = false
+            endCheck()
             switch outcome {
             case .passed:
                 lastCheckPassed = Date()
@@ -406,7 +427,7 @@ public final class AppModel: ObservableObject {
         guard phase == .locked, lockReason.allowsBiometricUnlock, biometricsEnrolled else { return }
         checkInFlight = true
         await unlockWithBiometrics()
-        checkInFlight = false
+        endCheck()
     }
 
     /// Changes how long the app may be away before it asks again — itself a check, since a
