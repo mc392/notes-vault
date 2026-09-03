@@ -110,15 +110,39 @@ public enum KeychainStore {
         return .value(value)
     }
 
+    /// Whether a passphrase is stored for this vault — asked without ever putting a prompt
+    /// on screen.
+    ///
+    /// Attributes only, never the data. That alone was assumed to be enough, and it is not:
+    /// the item is guarded by `.userPresence`, and the keychain is entitled to raise the
+    /// check for any query that touches it unless it is told not to. `kSecUseAuthenticationUI`
+    /// is that instruction. Without it a screen that merely *asks whether Face ID is set up*
+    /// can set Face ID off by being drawn — and a screen redraws whenever anything on it
+    /// changes, which is how one question becomes a loop of them.
     public static func hasStoredPassphrase(vaultID: String) -> Bool {
         var query = baseQuery(.passphrase, vaultID: vaultID)
         query[kSecMatchLimit as String] = kSecMatchLimitOne
-        // Attributes only, never the data. Asking for attributes does not trigger the
-        // biometric prompt, so the Unlock screen can find out whether to offer Face ID
-        // without setting it off just by being drawn.
         query[kSecReturnAttributes as String] = true
+        query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
 
-        return SecItemCopyMatching(query as CFDictionary, nil) == errSecSuccess
+        return hasPassphrase(for: SecItemCopyMatching(query as CFDictionary, nil))
+    }
+
+    /// Maps the status of that lookup. Pure, so the part that matters is testable without a
+    /// keychain, an enrolled face, or a device to show a prompt on.
+    static func hasPassphrase(for status: OSStatus) -> Bool {
+        switch status {
+        case errSecSuccess:
+            return true
+        case errSecInteractionNotAllowed:
+            // The refusal *is* the answer: something is there, and handing it over would
+            // need a check. The question asked was only whether it exists.
+            return true
+        default:
+            // errSecItemNotFound, and anything else unreadable — either way there is no
+            // passphrase this app can offer to unlock with.
+            return false
+        }
     }
 
     // MARK: - Primitives
