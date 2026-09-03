@@ -79,9 +79,23 @@ public final class AppModel: ObservableObject {
     public var deviceDisplayName: String { DeviceIdentity.current }
 
     public var biometricsAvailable: Bool { KeychainStore.biometricsAvailable }
-    public var biometricsEnrolled: Bool {
-        guard let vaultID else { return false }
-        return KeychainStore.hasStoredPassphrase(vaultID: vaultID)
+
+    /// Whether this device holds the passphrase behind Face ID for the open vault.
+    ///
+    /// Stored rather than computed, and this is not a performance question. It is read from
+    /// screens' `body`, which SwiftUI runs again whenever anything on that screen changes —
+    /// so a computed property here is a keychain query on every redraw, against an item the
+    /// keychain guards with a check. One stale reading of this is a wrong caption; one
+    /// keychain query too many is a Face ID prompt nobody asked for, in a loop as long as
+    /// the screen keeps redrawing. It is refreshed at the four moments it can change.
+    @Published public private(set) var biometricsEnrolled = false
+
+    private func refreshBiometricsEnrolled() {
+        guard let vaultID else {
+            biometricsEnrolled = false
+            return
+        }
+        biometricsEnrolled = KeychainStore.hasStoredPassphrase(vaultID: vaultID)
     }
 
     /// Whether this device can be asked to confirm the counsellor is present at all, and
@@ -181,6 +195,7 @@ public final class AppModel: ObservableObject {
         files = nil
         folderName = nil
         phase = .chooseFolder
+        refreshBiometricsEnrolled()
     }
 
     /// The vault's `jti`, read the same non-secret way `unlockWithBiometrics` does — the
@@ -223,6 +238,8 @@ public final class AppModel: ObservableObject {
             self.adopt(session: session, files: files)
             if rememberWithBiometrics {
                 KeychainStore.storePassphrase(passphrase, vaultID: session.configuration.jti)
+                // After `adopt`, which has already asked and been told no.
+                self.refreshBiometricsEnrolled()
             }
             // Typing the passphrase *is* a check, and the strongest one this app has, so it
             // stands for the next minute like any other — opening a note straight after
@@ -247,7 +264,18 @@ public final class AppModel: ObservableObject {
             return
         }
 
-        switch KeychainStore.passphrase(vaultID: configuration.jti, reason: "Unlock your clinical notes") {
+        // Off the main thread on purpose. `SecItemCopyMatching` on an item behind
+        // `.userPresence` does not return until the counsellor has answered the prompt, so
+        // called here — on the main actor — it holds the main thread for as long as somebody
+        // takes to look at their phone. Everything the app draws is frozen for that whole
+        // time, the scene's own comings and goings queue up behind it, and iOS is entitled
+        // to kill an app that stops answering for long enough.
+        let vaultIdentifier = configuration.jti
+        let result = await Task.detached(priority: .userInitiated) {
+            KeychainStore.passphrase(vaultID: vaultIdentifier, reason: "Unlock your clinical notes")
+        }.value
+
+        switch result {
         case .value(let passphrase):
             await unlock(passphrase: passphrase)
         case .cancelled:
@@ -260,6 +288,7 @@ public final class AppModel: ObservableObject {
         case .unavailable:
             errorMessage = "Face ID unlock isn't set up any more on this device — use your passphrase, then turn it back on from the unlock screen."
             KeychainStore.remove(.passphrase, vaultID: configuration.jti)
+            refreshBiometricsEnrolled()
         }
     }
 
@@ -279,6 +308,10 @@ public final class AppModel: ObservableObject {
         index = .empty
         issues = []
         if phase == .unlocked { phase = .locked }
+        // The vault identifier survives a lock, so the unlock screen still knows whether it
+        // may offer the Face ID button — but the item itself may have been removed by a
+        // failed check, so this is asked again rather than assumed.
+        refreshBiometricsEnrolled()
     }
 
     private func adopt(session: VaultSession, files: FileSystemVaultStore) {
@@ -286,6 +319,7 @@ public final class AppModel: ObservableObject {
         self.vaultID = session.configuration.jti
         self.store = VaultStore(engine: session.engine, files: files, deviceName: DeviceIdentity.current)
         self.indexStore = IndexStore(vaultID: session.configuration.jti)
+        refreshBiometricsEnrolled()
     }
 
     // MARK: - Checks
@@ -378,6 +412,14 @@ public final class AppModel: ObservableObject {
         // A check is on screen: this is the prompt returning, not the counsellor. The check
         // itself will take the shield down when it finishes.
         guard !checkInFlight else { return }
+
+        // Everything below is driven by scene-phase *edges*, and an edge can be missed — a
+        // blocked main thread, two transitions collapsed into one, a prompt that came and
+        // went while the app was busy. A shield that is only ever lowered by an edge is a
+        // shield that stays up for good when one goes astray, over an app that is running
+        // perfectly behind it. So being active at all is enough to take it down when
+        // nothing is asking for it.
+        if awaySince == nil { isShielded = false }
 
         guard let since = awaySince else {
             isShielded = false
