@@ -51,21 +51,53 @@ round-tripped through the older build does not lose these.
 Both apps implement exactly this. GroundWork Notes: `SessionPrediction.expected(…)`.
 GroundWork: `predictSessions(…)`.
 
-1. **Anchor** on the latest known session for the client.
-   - Notes: the session date of the latest note in the vault, `series-start` if there are
+1. **Anchor** on the **earliest** known session for the client.
+   - Notes: the session date of the *first* note in the vault, `series-start` if there are
      no notes at all, and nothing otherwise.
-   - GroundWork: the latest row in `S.sessions` for that code.
+   - GroundWork: the earliest row in `S.sessions` for that code.
 2. **Step** forward from the anchor in `cadenceDays` increments.
 3. **Snap** each candidate to `usual-day` when one is set, by moving at most three days in
    either direction. Every cadence is a whole number of weeks, so this only ever bites on
    the first step — which is the point: one session moved to a Thursday should not shift
    the whole series off Tuesdays forever.
-4. **Set the time of day** from `usual-time` when one is set; otherwise keep the anchor's.
-5. **Stop** at the end of today. A session that has not happened yet cannot be written up.
-6. **Drop** any candidate falling on the same local calendar day as a session that already
-   has a note. Same *day*, not same instant — a note written at 09:35 for a 09:30
-   appointment is that appointment.
-7. **Order** most recent first and cap the list at six.
+4. **Set the time of day** from `usual-time` when one is set; otherwise keep the time the
+   walk is carrying (see *No appointment time* below).
+5. **Claim** a session that already has a note when one falls within **half a cadence** of
+   the candidate, nearest first, each note claimed at most once. A claimed candidate is not
+   offered, and the walk **re-anchors onto the note's own date and time** before stepping
+   on — so a session moved by a day or two corrects the series rather than dragging it.
+6. **Stop** at the end of today. A session that has not happened yet cannot be written up.
+7. **Reach back** no further than **730 days** before today. Everything inside that window
+   that was not claimed is offered.
+8. **Order** most recent first. **No cap.**
+
+### Anchoring on the first session, not the latest
+
+Anchoring on the *latest* note is the obvious reading of "what is outstanding", and it is
+wrong. Suppose three Tuesdays have gone by unwritten and the counsellor writes up the most
+recent one: the anchor moves to it, the walk starts after it, and the two sessions still
+owed disappear off the list. That was a reported bug, not a hypothetical.
+
+Walking from the first session and claiming the notes as it goes gives the same answer for
+the recent end of the list and keeps the gaps behind it. It costs a longer walk, which is
+what the 730-day reach-back and the step guard are for.
+
+### No appointment time
+
+`usual-time` is often absent — GroundWork does not always know one. The prediction then
+carries down the time of the last session it claimed, which is a real appointment time and
+worth keeping.
+
+When there is no such session either — a client with a cadence, a series start and no notes
+yet — there is **no time at all**, and the prediction says so: GroundWork Notes returns
+`PredictedSession.timeIsKnown == false` and the app shows the date alone. The date itself is
+set to **midday local time**, which is what the note editor opens on if one of these is
+tapped.
+
+Midday, rather than midnight, throughout: `series-start` is a *day*, and a day read as
+midnight UTC is 01:00 in a British summer and the day before in New York. Reading days at
+midday makes them land on the right date everywhere — and 01:00 appointments appearing for
+clients who had no appointment time is exactly how this was found.
 
 ### The cadence mapping is 28 days, not a calendar month
 
@@ -112,7 +144,11 @@ fees, no attendance, no clinical content:
 - `status` is `active` | `paused` | `ended`, mapped from GroundWork's own statuses through
   its `clientCategories` table (`Ongoing`→active, `Paused`→paused, everything else→ended).
 - `usualDay` / `usualTime` are omitted when GroundWork cannot determine them, and the
-  prediction then keeps the anchor's own day and time.
+  prediction then keeps the day and time of the last session it claimed — or, if there is no
+  such session, offers a date with no time at all.
+- `seriesStart` is a **day**, `YYYY-MM-DD`. It is read at midday UTC, and two series starts
+  on the same day are the same series start however either was written down — so a sync does
+  not rewrite every client in the vault the first time the two apps spell it differently.
 - Codes GroundWork holds that are not valid `ClientCode`s — under two characters, or
   carrying punctuation — are left out of the file entirely rather than exported and
   rejected at the far end.
@@ -156,9 +192,15 @@ Writing over the same file, per platform:
 | Safari, and anything else | An ordinary download, then replace the file by hand. |
 
 **Sync only writes what changed.** It folds each client's current metadata, compares
-status, cadence, usual day, usual time and series start, and writes a metadata event only
-for the clients that actually differ. Without that, an append-only vault would gain one
-file per client per sync, forever.
+status, cadence, usual day, usual time and series start (by *day*), and writes a metadata
+event only for the clients that actually differ. Without that, an append-only vault would
+gain one file per client per sync, forever.
+
+**A sync does not rebuild the index.** It writes client metadata and cannot have changed a
+note, so the local index has the new metadata folded into it in place. Rebuilding meant
+re-reading and decrypting every note in the vault — tens of seconds on a full vault, after
+a sync that could not possibly have changed one, which is what made a sync of a few hundred
+clients feel like it had hung. The index is a cache; the next unlock rebuilds it anyway.
 
 A client in the roster that the vault has never seen is created. A client in the vault that
 is not in the roster is left completely alone — the roster is not authoritative about who

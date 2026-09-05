@@ -298,4 +298,50 @@ final class VaultIndexTests: XCTestCase {
         XCTAssertEqual(index.clients.first?.noteCount, 0)
         XCTAssertNil(index.clients.first?.lastContact)
     }
+
+    // MARK: - Folding metadata in without a rebuild
+
+    /// A schedule sync writes client metadata and nothing else, so the index is brought up
+    /// to date in place rather than by re-reading every note in the vault. The answer has to
+    /// be the one a full rebuild would have given, or the two paths drift apart.
+    func testFoldingMetadataInPlaceMatchesAFullRebuild() {
+        let sm2 = Fixture.code("SM2")
+        let ab1 = Fixture.code("AB1")
+        let notes = [
+            entry("SM2", "2026-06-01T09:30:00Z"),
+            entry("SM2", "2026-06-08T09:30:00Z"),
+            entry("AB1", "2026-06-02T10:00:00Z")
+        ]
+        let before = VaultIndex.build(notes: notes, clientEvents: [:])
+
+        let synced = ClientMetadataEvent(
+            client: sm2,
+            device: "mac",
+            status: .ended,
+            schedule: SessionSchedule(cadenceDays: 14, usualDay: .mon)
+        )
+        let updated = before.updatingClients([sm2: synced])
+        let rebuilt = VaultIndex.build(notes: notes, clientEvents: [sm2: synced])
+
+        XCTAssertEqual(updated.clients, rebuilt.clients)
+        XCTAssertEqual(updated.notes, before.notes, "no note was touched, so none was re-read")
+        XCTAssertEqual(updated.client(sm2)?.status, .ended)
+        XCTAssertEqual(updated.client(sm2)?.schedule?.cadenceDays, 14)
+        XCTAssertEqual(updated.client(sm2)?.noteCount, 2)
+        XCTAssertEqual(updated.client(ab1)?.status, .active, "a client the sync said nothing about is untouched")
+    }
+
+    /// A client the roster brought in for the first time has no notes yet, and has to appear
+    /// all the same — otherwise a sync looks like it did nothing.
+    func testFoldingInMetadataAddsAClientTheIndexHadNeverSeen() {
+        let index = VaultIndex.build(notes: [entry("SM2", "2026-06-01T09:30:00Z")], clientEvents: [:])
+        let brandNew = Fixture.code("NEW1")
+
+        let updated = index.updatingClients([
+            brandNew: ClientMetadataEvent(client: brandNew, device: "mac", status: .active)
+        ])
+
+        XCTAssertEqual(updated.clients.map(\.code.rawValue), ["NEW1", "SM2"])
+        XCTAssertEqual(updated.client(brandNew)?.noteCount, 0)
+    }
 }

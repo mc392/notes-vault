@@ -163,41 +163,88 @@ public struct VaultIndex: Codable, Sendable {
         builtAt: Date = Date()
     ) -> VaultIndex {
         let entries = notes.map { NoteIndexEntry(note: $0.note, filename: $0.filename) }
+        // Grouped once rather than filtered per client. The obvious spelling —
+        // `entries.filter { $0.client == code }` inside the loop — walks every note in the
+        // vault once per client, which for a few hundred clients and a few thousand notes is
+        // a million comparisons on a path the app runs after every write.
+        let byClient = Dictionary(grouping: entries, by: \.client)
         let superseded = Set(entries.compactMap { $0.supersedes })
 
         var codes = Set(entries.map { $0.client })
         codes.formUnion(clientEvents.keys)
 
-        let summaries: [ClientSummary] = codes.map { code in
-            let mine = entries.filter { $0.client == code }
-            let current = mine.filter { !superseded.contains($0.id) }
-            let event = clientEvents[code]
-
-            let latestSession = current.map(\.session).max() ?? mine.map(\.session).max()
-            let lastContact: Date?
-            if let override = event?.lastContactOverride {
-                lastContact = max(override, latestSession ?? override)
-            } else {
-                lastContact = latestSession
-            }
-
-            return ClientSummary(
-                code: code,
-                status: event?.status ?? .active,
-                retentionBasis: event?.retentionBasis ?? .adult,
-                firstContact: current.map(\.session).min() ?? mine.map(\.session).min(),
-                lastContact: lastContact,
-                noteCount: current.count,
-                supersededCount: mine.count - current.count,
-                schedule: event?.schedule,
-                seriesStart: event?.seriesStart
-            )
+        let summaries = codes.map { code in
+            summarise(code, notes: byClient[code] ?? [], superseded: superseded, event: clientEvents[code])
         }
 
         return VaultIndex(
             builtAt: builtAt,
             notes: entries.sorted { $0.session > $1.session },
             clients: summaries.sorted { $0.code < $1.code }
+        )
+    }
+
+    /// The same index with fresh client metadata folded in, and the notes left exactly as
+    /// they are.
+    ///
+    /// For the writes that cannot possibly have changed a note: a schedule sync, a status
+    /// change, a retention basis. `rebuildIndex` re-reads and decrypts every note in the
+    /// vault, which on a vault of any size is tens of seconds — a wait a counsellor was
+    /// paying after every schedule sync in exchange for nothing, because a sync only ever
+    /// writes client metadata.
+    ///
+    /// The index is a cache: this being a moment behind another device costs a rebuild, and
+    /// the next unlock does one anyway.
+    public func updatingClients(
+        _ events: [ClientCode: ClientMetadataEvent],
+        builtAt: Date = Date()
+    ) -> VaultIndex {
+        guard !events.isEmpty else { return self }
+
+        let byClient = Dictionary(grouping: notes, by: \.client)
+        let superseded = supersededIDs
+        var summaries = clients.filter { events[$0.code] == nil }
+
+        for (code, event) in events {
+            summaries.append(Self.summarise(code, notes: byClient[code] ?? [], superseded: superseded, event: event))
+        }
+
+        return VaultIndex(
+            builtAt: builtAt,
+            notes: notes,
+            clients: summaries.sorted { $0.code < $1.code }
+        )
+    }
+
+    /// One client's row, from their notes and their folded metadata. The one place the two
+    /// are put together, so a summary built incrementally and one built from a full walk
+    /// cannot disagree.
+    private static func summarise(
+        _ code: ClientCode,
+        notes: [NoteIndexEntry],
+        superseded: Set<NoteID>,
+        event: ClientMetadataEvent?
+    ) -> ClientSummary {
+        let current = notes.filter { !superseded.contains($0.id) }
+
+        let latestSession = current.map(\.session).max() ?? notes.map(\.session).max()
+        let lastContact: Date?
+        if let override = event?.lastContactOverride {
+            lastContact = max(override, latestSession ?? override)
+        } else {
+            lastContact = latestSession
+        }
+
+        return ClientSummary(
+            code: code,
+            status: event?.status ?? .active,
+            retentionBasis: event?.retentionBasis ?? .adult,
+            firstContact: current.map(\.session).min() ?? notes.map(\.session).min(),
+            lastContact: lastContact,
+            noteCount: current.count,
+            supersededCount: notes.count - current.count,
+            schedule: event?.schedule,
+            seriesStart: event?.seriesStart
         )
     }
 }

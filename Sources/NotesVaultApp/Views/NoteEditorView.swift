@@ -301,7 +301,7 @@ struct NoteEditorView: View {
     ///
     /// Only offered on a new note. A correction is *about* a session that already exists,
     /// so suggesting a different date for it would be nonsense.
-    private var suggestions: [Date] {
+    private var suggestions: [PredictedSession] {
         guard correcting == nil else { return [] }
         return model.predictedSessions(for: client)
     }
@@ -355,11 +355,11 @@ private struct NoteFieldRow: View {
 /// these can be a date that never happened — which is fine when picking the right one is a
 /// tap away, and would not be if this were presented as a list of work to do.
 private struct SuggestedSessionDates: View {
-    let dates: [Date]
+    let dates: [PredictedSession]
     @Binding var selection: Date
 
-    private func isChosen(_ date: Date) -> Bool {
-        Calendar.current.isDate(date, equalTo: selection, toGranularity: .minute)
+    private func isChosen(_ session: PredictedSession) -> Bool {
+        Calendar.current.isDate(session.date, equalTo: selection, toGranularity: .minute)
     }
 
     var body: some View {
@@ -369,16 +369,16 @@ private struct SuggestedSessionDates: View {
                 .foregroundStyle(.secondary)
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
-                    ForEach(dates, id: \.self) { date in
+                    ForEach(dates) { session in
                         Button {
-                            selection = date
+                            selection = session.date
                         } label: {
-                            Text(Formatted.dateTime(date))
+                            Text(Formatted.session(session))
                                 .font(.footnote)
                                 .lineLimit(1)
                         }
                         .buttonStyle(.bordered)
-                        .tint(isChosen(date) ? .accentColor : .secondary)
+                        .tint(isChosen(session) ? .accentColor : .secondary)
                     }
                 }
                 // The scroll view is edge-to-edge inside a Form row, so the first and last

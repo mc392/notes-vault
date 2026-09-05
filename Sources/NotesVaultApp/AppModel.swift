@@ -592,7 +592,9 @@ public final class AppModel: ObservableObject {
         await run("Adding \(code)…") {
             try store.write(event: event)
         } then: { [weak self] _ in
-            Task { await self?.refreshIndex(force: true) }
+            // Client metadata only: no note has changed, so the index is brought up to date
+            // in place rather than by re-reading and decrypting the whole vault.
+            self?.applyToIndex([code: event])
         }
     }
 
@@ -617,20 +619,43 @@ public final class AppModel: ObservableObject {
         await run("Saving…") {
             try store.write(event: event)
         } then: { [weak self] _ in
-            Task { await self?.refreshIndex(force: true) }
+            self?.applyToIndex([code: event])
         }
+    }
+
+    /// Folds freshly written client metadata into the index and saves it.
+    ///
+    /// The event this app has just written is, by definition, the latest in that client's
+    /// log, and the log folds latest-wins — so this is the same answer a full rebuild would
+    /// give, without opening a single note. See `VaultIndex.updatingClients`.
+    private func applyToIndex(_ events: [ClientCode: ClientMetadataEvent]) {
+        guard !events.isEmpty else { return }
+        index = index.updatingClients(events)
+        indexStore?.save(index)
     }
 
     // MARK: - Predicted sessions
 
-    /// The sessions this client should have had since their last note, and has not.
+    /// Every session this client should have had since their first note, and has not.
+    ///
+    /// Not only the ones since the *latest* note: writing one of them up must not make the
+    /// rest disappear, which is exactly what anchoring on the latest note used to do.
     ///
     /// Computed entirely from the vault — the notes already stored and the cadence in the
     /// client's metadata — so it is right on a Mac that has never been in contact with
     /// GroundWork, as long as iCloud has brought the vault across. See
     /// `docs/schedule-sync.md`.
-    public func predictedSessions(for code: ClientCode) -> [Date] {
+    public func predictedSessions(for code: ClientCode) -> [PredictedSession] {
         SessionPrediction.expected(for: code, in: index)
+    }
+
+    /// The same thing for every client at once, for the client list.
+    ///
+    /// Asking `predictedSessions(for:)` per row re-reads the whole note list per client;
+    /// worked out once for the list this is a single pass. Clients with nothing outstanding
+    /// are simply absent.
+    public func outstandingSessions() -> [ClientCode: [PredictedSession]] {
+        SessionPrediction.expectedForEveryClient(in: index)
     }
 
     // MARK: - Schedule sync
@@ -707,30 +732,45 @@ public final class AppModel: ObservableObject {
     }
 
     /// Writes an approved plan. One metadata event per client that actually changed.
+    ///
+    /// `progress` is called from the vault queue as each client lands, so a sync of two
+    /// hundred clients shows a bar that moves rather than a spinner that does not.
+    ///
+    /// A sync writes client metadata and nothing else, so the index is updated in place
+    /// afterwards. It used to call `refreshIndex(force:)`, which re-reads and decrypts every
+    /// note in the vault — on a full vault that is tens of seconds of work after a sync that
+    /// could not have changed a single note, and it is what made a big sync feel endless.
     @discardableResult
-    public func applyScheduleSync(_ plan: RosterSyncPlan) async -> Int {
+    public func applyScheduleSync(
+        _ plan: RosterSyncPlan,
+        progress: @escaping (Int, Int) -> Void = { _, _ in }
+    ) async -> Int {
         guard let store, !plan.isEmpty else {
             RosterBookmark.lastSync = Date()
             return 0
         }
-        var written = 0
+        var applied: [ClientCode: ClientMetadataEvent] = [:]
+        let total = plan.changes.count
 
-        await run("Updating \(plan.changes.count) client\(plan.changes.count == 1 ? "" : "s")…") { () -> Int in
-            var count = 0
-            for change in plan.changes {
+        // No busy message: the sync screen shows its own progress, client by client, and a
+        // modal spinner over the top of it would hide the one thing worth watching.
+        await run(nil) { () -> [ClientCode: ClientMetadataEvent] in
+            var written: [ClientCode: ClientMetadataEvent] = [:]
+            for (offset, change) in plan.changes.enumerated() {
                 try store.write(event: change.event)
-                count += 1
+                written[change.event.client] = change.event
+                progress(offset + 1, total)
             }
-            return count
-        } then: { count in
-            written = count
+            return written
+        } then: { written in
+            applied = written
         }
 
-        if written > 0 {
+        if !applied.isEmpty {
             RosterBookmark.lastSync = Date()
-            await refreshIndex(force: true)
+            applyToIndex(applied)
         }
-        return written
+        return applied.count
     }
 
     // MARK: - Retention

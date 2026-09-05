@@ -44,6 +44,10 @@ struct ClientListView: View {
                     }
                 }
             } else {
+                // Worked out once for the whole list. Asked per row, each answer re-reads
+                // every note in the vault to find one client's, which on a full vault is the
+                // list itself becoming slow to scroll.
+                let outstanding = model.outstandingSessions()
                 Section {
                     ForEach(clients) { client in
                         NavigationLink {
@@ -52,7 +56,7 @@ struct ClientListView: View {
                             ClientRow(
                                 client: client,
                                 policy: model.retentionPolicy,
-                                awaiting: model.predictedSessions(for: client.code).count
+                                awaiting: outstanding[client.code]?.count ?? 0
                             )
                         }
                     }

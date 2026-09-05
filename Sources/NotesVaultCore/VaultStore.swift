@@ -289,9 +289,10 @@ public final class VaultStore {
 
     /// The folded current metadata for every client in the vault, in one walk.
     ///
-    /// `currentMetadata(for:)` in a loop would re-list and re-decrypt each client's folder
-    /// per call; the schedule sync needs all of it at once to work out what has actually
-    /// changed, and a vault of a few hundred clients should not pay for that twice.
+    /// The schedule sync needs all of it at once to work out what has actually changed, and
+    /// a vault of a few hundred clients should not pay to list and hash each folder more
+    /// than once. Note bodies are never opened here: this reads the `.client` files only,
+    /// which is why a sync is not as slow as a full index rebuild.
     public func allCurrentMetadata() throws -> (events: [ClientCode: ClientMetadataEvent], issues: [VaultIssue]) {
         let listing = try listClientCodes()
         var events: [ClientCode: ClientMetadataEvent] = [:]
@@ -299,7 +300,20 @@ public final class VaultStore {
 
         for code in listing.codes {
             do {
-                if let folded = try currentMetadata(for: code) {
+                guard let folderID = try directoryID(for: code) else { continue }
+                let contents = try listFilenames(for: code)
+                issues.append(contentsOf: contents.issues)
+
+                var clientEvents: [ClientMetadataEvent] = []
+                for filename in contents.events {
+                    let path = try layout.filePath(named: filename, in: folderID)
+                    guard files.fileExists(at: path) else { continue }
+                    if let plaintext = try? layout.engine.decryptContent(try files.read(at: path)),
+                       let event = try? ClientMetadataEvent.parse(plaintext) {
+                        clientEvents.append(event)
+                    }
+                }
+                if let folded = ClientMetadataEvent.fold(clientEvents) {
                     events[code] = folded
                 }
             } catch {

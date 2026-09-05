@@ -36,7 +36,7 @@ swift test
 | SwiftUI screens | **Compiles** for macOS and iOS — but has never been rendered |
 | Xcode project | **Builds** for both platforms, signing off |
 | Import: readers for Word, Excel, CSV, text, RTF, HTML, Evernote; grouping, mapping, name scan, metadata fields, writer | **93 tests passing**, including real `.docx` and `.xlsx` fixtures |
-| Session schedules: predicting what needs writing up, the roster file, planning a sync | **39 tests passing**, fourteen of them cross-checked against GroundWork's own implementation |
+| Session schedules: predicting what needs writing up, the roster file, planning a sync | Covered case by case in `SessionScheduleTests`, `ScheduleRosterTests` and `GroundWorkRosterFileTests` |
 | Import screens, PDF text, picking files and folders | **Compiles** for macOS and iOS. **Never rendered**, like the rest of the UI |
 | Keychain, biometrics, iCloud placeholder handling | Compiles. **Behaviour untested — needs a device** |
 
@@ -88,11 +88,23 @@ names and nothing clinical. Settings › GroundWork › Sync schedules: pick the
 later sync re-reads whatever GroundWork last wrote there. Nothing goes back the other way; whether
 a note has been written stays a tick in GroundWork, done by hand.
 
+Every outstanding session is listed, not just the most recent handful, and writing one of them up
+leaves the others where they are — the walk starts at the client's *first* session and claims the
+notes as it goes, rather than starting after the latest note and losing every gap behind it. It
+reaches back two years and no further, which is what keeps a client seen for a decade, or a series
+start typed as 1926, from arriving as hundreds of rows.
+
+Where GroundWork holds no appointment time and there is no note to take one from, a suggestion is a
+date with no time rather than a guess at one.
+
 The rule both apps implement is written down in **[docs/schedule-sync.md](docs/schedule-sync.md)**,
 because they are two implementations in two languages and a disagreement between them shows up as
-the wrong dates in front of a counsellor. `SessionScheduleTests` asserts fourteen cases against it;
-GroundWork's `scripts/check-schedule-parity.mjs` asserts the same fourteen, with the same expected
-output, against its own code.
+the wrong dates in front of a counsellor. `SessionScheduleTests` asserts it case by case.
+
+> **GroundWork's side has not been changed to match.** The anchoring, the claiming rule and the
+> two-year reach-back above are new here; `predictSessions(…)` and
+> `scripts/check-schedule-parity.mjs` in the GroundWork repo still implement the old rule and will
+> offer different dates until they are brought across.
 
 A cancelled session leaves no trace in the vault, so its date will still be suggested. That is why
 these are offered as dates to pick from rather than as a list of work outstanding.

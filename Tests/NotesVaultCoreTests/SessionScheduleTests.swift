@@ -31,20 +31,24 @@ final class SessionScheduleTests: XCTestCase {
         now: String,
         limit: Int = SessionPrediction.defaultLimit
     ) -> [String] {
-        let formatter = DateFormatter()
-        formatter.calendar = calendar
-        formatter.timeZone = calendar.timeZone
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy-MM-dd HH:mm"
-
-        return SessionPrediction.expected(
+        SessionPrediction.expected(
             anchor: date(anchor),
             schedule: schedule,
             recorded: recorded.map(date),
             now: date(now),
             limit: limit,
             calendar: calendar
-        ).map(formatter.string(from:))
+        )
+        .map { stamp($0.date) }
+    }
+
+    private func stamp(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return formatter.string(from: date)
     }
 
     // MARK: - Stepping
@@ -194,7 +198,22 @@ final class SessionScheduleTests: XCTestCase {
 
     // MARK: - Limits and degenerate input
 
-    func testTheListIsCapped() {
+    /// Nothing is dropped by default. A counsellor with eleven weeks of write-ups waiting
+    /// needs to see eleven, not the last six with no sign that there are more.
+    func testEverySessionOutstandingIsListedNotJustTheFirstSix() {
+        let dates = expect(
+            anchor: "2026-06-02 09:00",
+            schedule: SessionSchedule(cadenceDays: 7, usualDay: .tue, usualTime: TimeOfDay(hour: 9, minute: 0)),
+            now: "2026-08-25 12:00"
+        )
+        XCTAssertEqual(dates.count, 12)
+        XCTAssertEqual(dates.first, "2026-08-25 09:00", "the most recent outstanding session comes first")
+        XCTAssertEqual(dates.last, "2026-06-09 09:00", "and the oldest is still there")
+    }
+
+    /// The cap is still there for a caller that wants one — the client list asks for a
+    /// count, not a list — it is simply not the default any more.
+    func testALimitIsHonouredWhenOneIsAskedFor() {
         let dates = expect(
             anchor: "2025-01-07 09:00",
             schedule: SessionSchedule(cadenceDays: 7, usualDay: .tue, usualTime: TimeOfDay(hour: 9, minute: 0)),
@@ -203,6 +222,51 @@ final class SessionScheduleTests: XCTestCase {
         )
         XCTAssertEqual(dates.count, 6)
         XCTAssertEqual(dates.first, "2026-08-25 09:00", "the most recent outstanding session comes first")
+    }
+
+    /// Writing one of several outstanding sessions up must not take the others off the
+    /// list. This is the bug that made the app look like it had forgotten them: anchoring
+    /// on the *latest* note started the walk after every gap behind it.
+    func testWritingUpOneOutstandingSessionLeavesTheRest() {
+        let schedule = SessionSchedule(cadenceDays: 7, usualDay: .tue, usualTime: TimeOfDay(hour: 9, minute: 30))
+
+        let before = expect(
+            anchor: "2026-07-28 09:30",
+            schedule: schedule,
+            now: "2026-08-25 14:00"
+        )
+        XCTAssertEqual(before, ["2026-08-25 09:30", "2026-08-18 09:30", "2026-08-11 09:30", "2026-08-04 09:30"])
+
+        // The counsellor writes up the most recent one. The three behind it are still owed.
+        let after = expect(
+            anchor: "2026-07-28 09:30",
+            schedule: schedule,
+            recorded: ["2026-08-25 09:30"],
+            now: "2026-08-25 14:00"
+        )
+        XCTAssertEqual(after, ["2026-08-18 09:30", "2026-08-11 09:30", "2026-08-04 09:30"])
+
+        // And writing up one from the middle leaves the ones on either side of it.
+        let middle = expect(
+            anchor: "2026-07-28 09:30",
+            schedule: schedule,
+            recorded: ["2026-08-25 09:30", "2026-08-11 09:30"],
+            now: "2026-08-25 14:00"
+        )
+        XCTAssertEqual(middle, ["2026-08-18 09:30", "2026-08-04 09:30"])
+    }
+
+    /// The walk steps on from where a session actually was, not from where the arithmetic
+    /// put it — so a series that slipped does not drift a day further every fortnight.
+    func testTheWalkReAnchorsOnASessionThatWasWrittenUpLate() {
+        let dates = expect(
+            anchor: "2026-08-04 09:30",
+            schedule: SessionSchedule(cadenceDays: 7),
+            recorded: ["2026-08-12 11:00"],
+            now: "2026-08-26 12:00"
+        )
+        XCTAssertEqual(dates, ["2026-08-26 11:00", "2026-08-19 11:00"],
+                       "stepped on from the 12th at 11:00, not from the 11th at 09:30")
     }
 
     func testAnAnchorInTheFutureProducesNothing() {
@@ -217,13 +281,43 @@ final class SessionScheduleTests: XCTestCase {
     }
 
     func testAVeryOldAnchorTerminates() {
-        // 1926 rather than 2026 is the plausible typo, and it must not walk forever.
+        // 1926 rather than 2026 is the plausible typo, and it must not walk forever — nor
+        // fill the screen with a century of appointments nobody had.
         let dates = expect(
             anchor: "1926-01-05 09:00",
             schedule: SessionSchedule(cadenceDays: 7, usualDay: .tue, usualTime: TimeOfDay(hour: 9, minute: 0)),
             now: "2026-08-25 12:00"
         )
-        XCTAssertEqual(dates.count, 6)
+        XCTAssertEqual(dates.count, 105, "two years of Tuesdays, and nothing before that")
+        XCTAssertEqual(dates.first, "2026-08-25 09:00")
+        XCTAssertEqual(dates.last, "2024-08-27 09:00")
+    }
+
+    /// A client seen weekly for a decade, with every session written up but the last three.
+    /// The walk has to reach today without stepping through five hundred appointments, and
+    /// still recognise the notes when it gets there.
+    func testAClientSeenForYearsOwesOnlyWhatTheyActuallyOwe() {
+        var written: [String] = []
+        var day = date("2016-01-05 09:00")
+        let last = date("2026-08-04 09:00")
+        let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        while day <= last {
+            written.append(formatter.string(from: day))
+            day = calendar.date(byAdding: .day, value: 7, to: day)!
+        }
+        XCTAssertEqual(written.count, 553)
+
+        let dates = expect(
+            anchor: "2016-01-05 09:00",
+            schedule: SessionSchedule(cadenceDays: 7, usualDay: .tue, usualTime: TimeOfDay(hour: 9, minute: 0)),
+            recorded: written,
+            now: "2026-08-25 12:00"
+        )
+        XCTAssertEqual(dates, ["2026-08-25 09:00", "2026-08-18 09:00", "2026-08-11 09:00"])
     }
 
     func testCadenceIsNeverZero() {
@@ -233,7 +327,7 @@ final class SessionScheduleTests: XCTestCase {
 
     // MARK: - From the index
 
-    func testPredictionFromTheIndexUsesTheLatestNoteAsTheAnchor() throws {
+    func testPredictionFromTheIndexAnchorsOnTheFirstNote() throws {
         let code = try ClientCode("SM2")
         let schedule = SessionSchedule(cadenceDays: 7, usualDay: .tue, usualTime: TimeOfDay(hour: 9, minute: 30))
         let notes = ["2026-08-04 09:30", "2026-07-28 09:30"].map { text in
@@ -248,7 +342,8 @@ final class SessionScheduleTests: XCTestCase {
         )
 
         let dates = SessionPrediction.expected(for: code, in: index, now: date("2026-08-18 12:00"), calendar: calendar)
-        XCTAssertEqual(dates.count, 2, "11 and 18 August are outstanding; 28 July and 4 August are written up")
+        XCTAssertEqual(dates.map { stamp($0.date) }, ["2026-08-18 09:30", "2026-08-11 09:30"],
+                       "11 and 18 August are outstanding; 28 July and 4 August are written up")
     }
 
     func testAClientWithNoNotesFallsBackToTheStartOfTheWork() throws {
@@ -265,6 +360,93 @@ final class SessionScheduleTests: XCTestCase {
         )
         let dates = SessionPrediction.expected(for: code, in: index, now: date("2026-08-18 12:00"), calendar: calendar)
         XCTAssertEqual(dates.count, 2)
+        XCTAssertTrue(dates.allSatisfy(\.timeIsKnown), "GroundWork gave a 09:30 slot, so the time is a real one")
+    }
+
+    /// The bug as it was reported: a client GroundWork holds no appointment time for was
+    /// being offered at 01:00. `series-start` is a day, written down as midnight UTC, and
+    /// midnight UTC read back through a British summer is one o'clock in the morning.
+    func testAClientWithNoAppointmentTimeIsOfferedADateAndNoTime() throws {
+        var london = Calendar(identifier: .gregorian)
+        london.timeZone = try XCTUnwrap(TimeZone(identifier: "Europe/London"))
+
+        let code = try ClientCode("NT1")
+        let index = VaultIndex.build(
+            notes: [],
+            clientEvents: [code: ClientMetadataEvent(
+                client: code,
+                device: "mac",
+                status: .active,
+                // A cadence and a day, but no time — which is what GroundWork sends when it
+                // does not know one.
+                schedule: SessionSchedule(cadenceDays: 7, usualDay: .tue),
+                seriesStart: date("2026-06-02")
+            )]
+        )
+
+        let dates = SessionPrediction.expected(for: code, in: index, now: date("2026-06-17 12:00"), calendar: london)
+
+        XCTAssertEqual(dates.count, 2)
+        XCTAssertTrue(dates.allSatisfy { !$0.timeIsKnown },
+                      "no slot from GroundWork and no note to borrow a time from, so there is no time to show")
+        for session in dates {
+            XCTAssertEqual(london.component(.hour, from: session.date), 12, "midday, never the small hours")
+        }
+    }
+
+    /// With no slot from GroundWork the time still comes from the notes when there are any:
+    /// that one is a real appointment time, and worth keeping.
+    func testWithNoSlotTheTimeComesFromTheLastSessionWrittenUp() throws {
+        let code = try ClientCode("NT2")
+        let index = VaultIndex.build(
+            notes: [(NoteRecord(client: code, session: date("2026-08-04 16:45"), device: "mac", body: "x"), "a.note")],
+            clientEvents: [code: ClientMetadataEvent(
+                client: code,
+                device: "mac",
+                status: .active,
+                schedule: SessionSchedule(cadenceDays: 7)
+            )]
+        )
+
+        let dates = SessionPrediction.expected(for: code, in: index, now: date("2026-08-18 12:00"), calendar: calendar)
+        XCTAssertEqual(dates.map { stamp($0.date) }, ["2026-08-18 16:45", "2026-08-11 16:45"])
+        XCTAssertTrue(dates.allSatisfy(\.timeIsKnown))
+    }
+
+    /// The whole-vault form has to give every client exactly what the per-client form does,
+    /// or the count on the client list and the list on the client's own screen disagree.
+    func testTheWholeVaultFormAgreesWithThePerClientForm() throws {
+        let schedule = SessionSchedule(cadenceDays: 7, usualDay: .tue, usualTime: TimeOfDay(hour: 9, minute: 30))
+        let one = try ClientCode("AA1")
+        let two = try ClientCode("BB2")
+        let three = try ClientCode("CC3")
+
+        let index = VaultIndex.build(
+            notes: [
+                (NoteRecord(client: one, session: date("2026-07-28 09:30"), device: "mac", body: "x"), "1.note"),
+                (NoteRecord(client: two, session: date("2026-08-18 09:30"), device: "mac", body: "x"), "2.note"),
+                (NoteRecord(client: three, session: date("2026-08-04 09:30"), device: "mac", body: "x"), "3.note")
+            ],
+            clientEvents: [
+                one: ClientMetadataEvent(client: one, device: "mac", status: .active, schedule: schedule),
+                two: ClientMetadataEvent(client: two, device: "mac", status: .active, schedule: schedule),
+                // No schedule at all, so nothing to predict from.
+                three: ClientMetadataEvent(client: three, device: "mac", status: .active)
+            ]
+        )
+
+        let now = date("2026-08-25 14:00")
+        let all = SessionPrediction.expectedForEveryClient(in: index, now: now, calendar: calendar)
+
+        XCTAssertNil(all[three], "a client with no cadence is absent rather than present and empty")
+        for code in [one, two] {
+            XCTAssertEqual(
+                all[code]?.map { stamp($0.date) },
+                SessionPrediction.expected(for: code, in: index, now: now, calendar: calendar).map { stamp($0.date) }
+            )
+        }
+        XCTAssertEqual(all[one]?.count, 4)
+        XCTAssertEqual(all[two]?.count, 1)
     }
 
     func testAClientWithNoScheduleGetsNoSuggestions() throws {
