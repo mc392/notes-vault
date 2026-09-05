@@ -77,6 +77,42 @@ jobs:
           mkdir -p ~/private_keys
           echo "$PRIVATE_KEY" > ~/private_keys/AuthKey_$KEY_ID.p8
 
+      # -allowProvisioningUpdates alone lets Xcode MINT a fresh signing certificate whenever
+      # the runner's (always-empty) keychain doesn't already have one — and a fresh disposable
+      # runner never does. Apple caps active certificates per account, and this account is
+      # shared with GroundWork's own testflight.yml (same team, L8B6623MNM), so a run here
+      # spends from the same pool. Importing the same certificate every run means Xcode
+      # reuses it instead of creating a new one — this is the same "Apple Development
+      # certificate it created while casting about for something to sign with" this file
+      # used to warn about below; importing one up front means there's never a gap for
+      # automatic signing to fill by minting its own. Profiles aren't capped the same way,
+      # so -allowProvisioningUpdates below still creates/refreshes those.
+      - name: Import the iOS signing certificate
+        env:
+          CERTIFICATE_P12: ${{ secrets.IOS_SIGNING_CERTIFICATE_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.IOS_SIGNING_CERTIFICATE_PASSWORD }}
+        run: |
+          if [ -z "$CERTIFICATE_P12" ] || [ -z "$CERTIFICATE_PASSWORD" ]; then
+            echo "::error::iOS signing certificate secrets are missing — see docs/releasing.md."
+            exit 1
+          fi
+          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 24)
+          echo "$CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$KEYCHAIN_PATH" \
+            -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s \
+            -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH" \
+            $(security list-keychains -d user | sed 's/"//g')
+          rm -f "$RUNNER_TEMP/certificate.p12"
+
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
       # A tag carries its own build number (notes-v0.1.0-b3); a manual run takes the input
       # and otherwise falls back to the run number, which only ever increases — so a
       # hand-started build cannot collide with one Apple has already accepted.
@@ -162,3 +198,12 @@ jobs:
           echo "Processing takes ~5-15 minutes, then it appears in TestFlight." >> $GITHUB_STEP_SUMMARY
           echo "This app uses Cryptomator's cryptography — answer the export-compliance" >> $GITHUB_STEP_SUMMARY
           echo "question in App Store Connect on the first upload. See docs/releasing.md." >> $GITHUB_STEP_SUMMARY
+
+      # The runner is destroyed after the job regardless, but this keeps a failed run from
+      # leaving a keychain file behind for the next debugging session to trip over.
+      - name: Remove the temporary signing keychain
+        if: always()
+        run: |
+          if [ -n "$KEYCHAIN_PATH" ] && [ -f "$KEYCHAIN_PATH" ]; then
+            security delete-keychain "$KEYCHAIN_PATH"
+          fi

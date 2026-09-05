@@ -82,19 +82,30 @@ Integrations → App Store Connect API → **Team key**, role **Admin**, downloa
 distribution certificates, and the export step fails with *"Cloud signing permission
 error — You haven't been given access to cloud-managed distribution certificates"*
 followed by *"No profiles for com.charlottebloor.groundworknotes were found"*. Neither
-message mentions the key or its role, which is what makes it worth writing down. Worse,
-the failed run leaves behind an Apple **Development** certificate it created while
-casting about for something to sign with; its private key died with that runner, and a
-later run can trip over it with *"your account already has a signing certificate for this
-machine, but its private key is not installed"*. If that happens, revoke that certificate
-— and only that one — at
-<https://developer.apple.com/account/resources/certificates/list>, checking the created
-date so an Apple **Distribution** certificate, or a development one belonging to a real
-Mac, is left alone.
+message mentions the key or its role, which is what makes it worth writing down.
 
 Add three secrets under GitHub → Settings → Secrets and variables → Actions:
 `APP_STORE_CONNECT_KEY_ID`, `APP_STORE_CONNECT_ISSUER_ID`,
 `APP_STORE_CONNECT_PRIVATE_KEY` (the whole `.p8`, BEGIN/END lines included).
+
+## One-time setup for the signing certificate
+
+Without a certificate already sitting in the runner's keychain, `-allowProvisioningUpdates`
+used to leave every failed (or even successful) run **casting about for something to
+sign with** and minting a fresh Apple **Development** certificate to do it — its private
+key died with that runner, so a later run could trip over *"your account already has a
+signing certificate for this machine, but its private key is not installed"*. Worse, this
+account's certificate cap is **shared with GroundWork's own TestFlight pipeline** (same
+team, `L8B6623MNM`) — enough runs on either repo and archiving fails outright with
+*"Choose a certificate to revoke. Your account has reached the maximum number of
+certificates."*
+
+The fix, done once, in GroundWork's `docs/releasing.md` — a `.p12` export of a single
+**Apple Development** certificate, imported into a temporary keychain on every run instead
+of minting a new one. **Reuse the exact same certificate and secrets for this repo** —
+same account, same cap, so a second certificate would only halve the room in the pool
+rather than avoid it. Add the same two secrets here too: `IOS_SIGNING_CERTIFICATE_P12`
+and `IOS_SIGNING_CERTIFICATE_PASSWORD`.
 
 ## Export compliance — read this once, properly
 
