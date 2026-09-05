@@ -122,6 +122,13 @@ public struct ScheduleRoster: Sendable {
 
     /// `2026-04-07`, the form GroundWork writes dates in. Also accepts a full timestamp, so
     /// a future GroundWork that starts writing one does not break this.
+    ///
+    /// A day with no time is read as **midday** UTC, not midnight. A day is not an instant,
+    /// and midnight is the worst instant to stand in for one: read back an hour east it is
+    /// the small hours of the same day, read back an hour west it is the day before. Midday
+    /// lands on the right date in every time zone this app will ever be opened in — and it
+    /// is why a client GroundWork has no appointment time for stopped being suggested at
+    /// 01:00 through a British summer.
     private static func parseDay(_ text: String) -> Date? {
         if let full = VaultDate.parse(text) { return full }
         let formatter = DateFormatter()
@@ -129,7 +136,8 @@ public struct ScheduleRoster: Sendable {
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.date(from: text)
+        guard let day = formatter.date(from: text) else { return nil }
+        return Calendar.gregorianUTC.date(bySettingHour: 12, minute: 0, second: 0, of: day) ?? day
     }
 }
 
@@ -222,7 +230,11 @@ public enum RosterSync {
 
             let statusChanged = current.status != entry.status
             let scheduleChanged = current.schedule != schedule
-            let startChanged = current.seriesStart != seriesStart
+            // By the day, not the instant. `series-start` is a date; how it happens to be
+            // written down — midnight from an older build, midday from this one, a full
+            // timestamp from a future GroundWork — is not a change the counsellor made, and
+            // treating it as one would rewrite every client in the vault on one sync.
+            let startChanged = !sameDay(current.seriesStart, seriesStart)
 
             guard statusChanged || scheduleChanged || startChanged else {
                 unchanged += 1
@@ -267,5 +279,14 @@ public enum RosterSync {
             untouched: knownClients.filter { !inRoster.contains($0) }.sorted(),
             issues: roster.issues
         )
+    }
+
+    /// Two optional dates on the same UTC day, or both absent.
+    private static func sameDay(_ lhs: Date?, _ rhs: Date?) -> Bool {
+        switch (lhs, rhs) {
+        case (nil, nil): return true
+        case let (lhs?, rhs?): return Calendar.gregorianUTC.isDate(lhs, inSameDayAs: rhs)
+        default: return false
+        }
     }
 }

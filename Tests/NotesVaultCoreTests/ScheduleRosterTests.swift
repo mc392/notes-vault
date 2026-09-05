@@ -205,6 +205,36 @@ final class ScheduleRosterTests: XCTestCase {
         XCTAssertFalse(result.changes.contains { $0.event.client.rawValue == "ZZ9" })
     }
 
+    /// A day is not an instant. Reading `2026-04-07` as midnight UTC puts it in the small
+    /// hours in London and on the 6th in New York; midday is on the 7th wherever it is read.
+    func testADayWithNoTimeIsReadAsMidday() throws {
+        let parsed = try roster(wellFormed)
+        let start = try XCTUnwrap(parsed.entries[0].seriesStart)
+        let parts = Calendar.gregorianUTC.dateComponents([.year, .month, .day, .hour], from: start)
+
+        XCTAssertEqual(parts.year, 2026)
+        XCTAssertEqual(parts.month, 4)
+        XCTAssertEqual(parts.day, 7)
+        XCTAssertEqual(parts.hour, 12)
+    }
+
+    /// The vault is append-only, so a series start written as midnight by an older build
+    /// must not read as a change now that this one writes midday. It is the same day, and
+    /// the same day is not a change — otherwise one sync rewrites every client in the vault.
+    func testAStartDateWrittenAtADifferentTimeOfDayIsNotAChange() throws {
+        let existing = ClientMetadataEvent(
+            client: try ClientCode("SM2"),
+            device: "mac",
+            status: .active,
+            schedule: SessionSchedule(cadenceDays: 7, usualDay: .tue, usualTime: TimeOfDay(hour: 9, minute: 30)),
+            seriesStart: try XCTUnwrap(VaultDate.parse("2026-04-07T00:00:00Z"))
+        )
+        let result = try plan(wellFormed, existing: [existing])
+
+        XCTAssertFalse(result.changes.contains { $0.event.client.rawValue == "SM2" },
+                       "same schedule, same status, same day — nothing to write")
+    }
+
     func testSkippedRowsAreCarriedIntoThePlan() throws {
         let result = try plan(#"{"kind":"schedules","version":1,"clients":[{"code":"Sarah M","cadenceDays":7}]}"#)
         XCTAssertEqual(result.issues.count, 1)

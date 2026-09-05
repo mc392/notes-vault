@@ -16,7 +16,7 @@ struct ClientDetailView: View {
     /// that does not go through the check.
     @State private var opening: NoteIndexEntry?
 
-    private var awaiting: [Date] { model.predictedSessions(for: code) }
+    private var awaiting: [PredictedSession] { model.predictedSessions(for: code) }
 
     private var client: ClientSummary? { model.index.client(code) }
 
@@ -69,13 +69,13 @@ struct ClientDetailView: View {
 
             if !awaiting.isEmpty {
                 Section {
-                    ForEach(awaiting, id: \.self) { date in
+                    ForEach(awaiting) { session in
                         Button {
-                            composingDate = date
+                            composingDate = session.date
                             composing = true
                         } label: {
                             HStack {
-                                Text(Formatted.dateTime(date))
+                                Text(Formatted.session(session))
                                 Spacer()
                                 Image(systemName: "square.and.pencil")
                                     .foregroundStyle(.secondary)

@@ -139,7 +139,7 @@ final class GroundWorkRosterFileTests: XCTestCase {
             in: index,
             now: formatter.date(from: "2026-08-25 14:00")!,
             calendar: calendar
-        ).map(formatter.string(from:))
+        ).map { formatter.string(from: $0.date) }
 
         XCTAssertEqual(suggestions, ["2026-08-25 09:30", "2026-08-18 09:30", "2026-08-11 09:30"],
                        "three Tuesdays since the last note, none of them written up")
@@ -170,7 +170,7 @@ final class GroundWorkRosterFileTests: XCTestCase {
             in: index,
             now: formatter.date(from: "2026-07-08 12:00")!,
             calendar: calendar
-        ).map(formatter.string(from:))
+        ).map { formatter.string(from: $0.date) }
 
         XCTAssertEqual(suggestions, ["2026-07-01 18:00", "2026-06-03 18:00"])
     }

@@ -16,6 +16,11 @@ struct ScheduleSyncView: View {
     @State private var plan: RosterSyncPlan?
     @State private var appliedCount: Int?
     @State private var checked = false
+    /// How far through writing the plan we are. A sync of two hundred clients is two
+    /// hundred files into an iCloud folder and takes as long as that sounds — so it counts
+    /// them off rather than showing a spinner and leaving the counsellor to wonder whether
+    /// it has hung.
+    @State private var applying: (done: Int, total: Int)?
 
     var body: some View {
         NavigationStack {
@@ -43,6 +48,18 @@ struct ScheduleSyncView: View {
                          : "GroundWork writes over this file each time you sync there. Checking here re-reads it, so the two stay in step without picking a file again.")
                 }
 
+                if let applying {
+                    Section {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ProgressView(value: Double(applying.done), total: Double(max(applying.total, 1)))
+                            Text("Updating \(applying.done) of \(applying.total)…")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+
                 if let applied = appliedCount {
                     Section {
                         Label(
@@ -55,7 +72,7 @@ struct ScheduleSyncView: View {
                     }
                 }
 
-                if let plan, appliedCount == nil {
+                if let plan, appliedCount == nil, applying == nil {
                     planSections(plan)
                 } else if checked && plan == nil && model.rosterFileName != nil {
                     Section {
@@ -70,12 +87,10 @@ struct ScheduleSyncView: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { dismiss() }
                 }
-                if let plan, !plan.isEmpty, appliedCount == nil {
+                if let plan, !plan.isEmpty, appliedCount == nil, applying == nil {
                     ToolbarItem(placement: .confirmationAction) {
                         Button("Apply") {
-                            Task {
-                                appliedCount = await model.applyScheduleSync(plan)
-                            }
+                            Task { await apply(plan) }
                         }
                     }
                 }
@@ -177,6 +192,16 @@ struct ScheduleSyncView: View {
     private func check() async {
         checked = true
         appliedCount = nil
+        applying = nil
         plan = await model.planScheduleSync()
+    }
+
+    private func apply(_ plan: RosterSyncPlan) async {
+        applying = (0, plan.changes.count)
+        let written = await model.applyScheduleSync(plan) { done, total in
+            Task { @MainActor in applying = (done, total) }
+        }
+        applying = nil
+        appliedCount = written
     }
 }
