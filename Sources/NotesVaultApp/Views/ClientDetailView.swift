@@ -110,7 +110,11 @@ struct ClientDetailView: View {
                             }
                         } label: {
                             HStack {
-                                NoteRow(entry: entry, isSuperseded: supersededIDs.contains(entry.id))
+                                NoteRow(
+                                    entry: entry,
+                                    isSuperseded: supersededIDs.contains(entry.id),
+                                    templateName: model.noteTemplates.displayName(for: entry.template)
+                                )
                                 Spacer(minLength: 8)
                                 Image(systemName: "chevron.right")
                                     .font(.caption.weight(.semibold))
@@ -167,6 +171,9 @@ struct ClientDetailView: View {
 struct NoteRow: View {
     let entry: NoteIndexEntry
     let isSuperseded: Bool
+    /// Passed in rather than looked up here, because this row is drawn once per note and
+    /// the name comes from a device setting the list already has to hand.
+    let templateName: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -183,7 +190,7 @@ struct NoteRow: View {
             }
             HStack(spacing: 10) {
                 Text("\(entry.wordCount) words")
-                Text(entry.template.displayName)
+                Text(templateName)
                 Text(entry.device)
             }
             .font(.caption)

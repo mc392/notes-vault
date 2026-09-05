@@ -134,9 +134,37 @@ final class NoteFormatTests: XCTestCase {
     }
 
     func testTemplateOnlyPrefills() {
-        XCTAssertTrue(NoteTemplate.freeform.starterBody.isEmpty)
-        XCTAssertTrue(NoteTemplate.soap.starterBody.contains("Subjective"))
-        XCTAssertTrue(NoteTemplate.dap.starterBody.contains("Data"))
+        let templates = NoteTemplateSettings.default
+        XCTAssertTrue(templates.starterBody(for: .freeform).isEmpty)
+        XCTAssertTrue(templates.starterBody(for: .soap).contains("Subjective"))
+        XCTAssertTrue(templates.starterBody(for: .dap).contains("Data"))
+    }
+
+    /// A note written from a template this build has never seen is a note, not a fault.
+    /// The identifier is carried through untouched so the note still says what it was
+    /// written from, and so a device that *does* have that template reads it back properly.
+    func testANoteFromAnUnknownTemplateRoundTripsRatherThanBeingReset() throws {
+        let note = NoteRecord(
+            client: Fixture.code("SM2"),
+            session: Fixture.date("2026-06-14T09:30:00Z"),
+            written: Fixture.date("2026-06-14T10:00:00Z"),
+            device: "mac",
+            template: NoteTemplate(rawValue: "trauma-review"),
+            body: "Body."
+        )
+        let parsed = try NoteRecord.parse(note.serialised())
+
+        XCTAssertEqual(parsed.template.rawValue, "trauma-review")
+        XCTAssertEqual(parsed.template.displayName, "Trauma review",
+                       "readable even on a device that has never been given the template")
+        XCTAssertEqual(NoteTemplateSettings.default.starterBody(for: parsed.template), "",
+                       "and it prefills nothing rather than guessing at headings")
+    }
+
+    func testAMissingOrBlankTemplateHeaderReadsAsFreeform() {
+        XCTAssertEqual(NoteTemplate(rawValue: ""), .freeform)
+        XCTAssertEqual(NoteTemplate(rawValue: "   "), .freeform)
+        XCTAssertEqual(NoteTemplate(rawValue: "SOAP"), .soap, "the header is matched case-insensitively")
     }
 }
 

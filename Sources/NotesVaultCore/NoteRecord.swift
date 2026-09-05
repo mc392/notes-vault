@@ -1,30 +1,64 @@
 import Foundation
 
-public enum NoteTemplate: String, CaseIterable, Codable, Sendable {
-    case freeform
-    case soap
-    case dap
+/// Which template a note was started from — an identifier and nothing else.
+///
+/// Deliberately **not** an enum. The headings a counsellor works to are theirs, not ours,
+/// and decision 07 said templates are configurable; a closed set of three could not honour
+/// that. The identifier is what goes in the note file (`template: soap`), so it has to be
+/// something a note written today still reads back as years from now, on a device that has
+/// never heard of the template it names.
+///
+/// What each one is *called* and what it prefills live in `NoteTemplateSettings`, which is
+/// a device setting like the note fields. That split is what lets a note carry a template
+/// this device knows nothing about and still read back sensibly — `displayName` falls back
+/// to the identifier, which for a template made in this app is the counsellor's own words
+/// with the punctuation taken out.
+public struct NoteTemplate: RawRepresentable, Hashable, Codable, Sendable, Identifiable {
+    public let rawValue: String
+    public var id: String { rawValue }
 
+    /// Never fails. A note carrying a template header this build has never seen is not a
+    /// damaged note, and refusing to read it would be the app losing a record over a label.
+    /// An empty or blank header reads as freeform, which is what it means.
+    public init(rawValue: String) {
+        let cleaned = rawValue
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        self.rawValue = cleaned.isEmpty ? Self.freeformIdentifier : cleaned
+    }
+
+    private static let freeformIdentifier = "freeform"
+
+    /// The three this app has always shipped. They are ordinary templates — a counsellor's
+    /// own sits beside them and behaves identically — they simply cannot be deleted.
+    public static let freeform = NoteTemplate(rawValue: freeformIdentifier)
+    public static let soap = NoteTemplate(rawValue: "soap")
+    public static let dap = NoteTemplate(rawValue: "dap")
+
+    /// What to call this template when nothing on this device knows better: the two
+    /// abbreviations spelled the way anyone writing notes expects to see them, and anything
+    /// else turned back from `trauma-review` into `Trauma review`.
     public var displayName: String {
-        switch self {
-        case .freeform: return "Freeform"
-        case .soap: return "SOAP"
-        case .dap: return "DAP"
+        switch rawValue {
+        case Self.freeformIdentifier: return "Freeform"
+        case "soap": return "SOAP"
+        case "dap": return "DAP"
+        default:
+            let words = rawValue.split(separator: "-").joined(separator: " ")
+            guard let first = words.first else { return rawValue }
+            return first.uppercased() + words.dropFirst()
         }
     }
 
-    /// Decision 07: templates are configurable and freeform is the default. A template
-    /// only ever *prefills* the editor — nothing enforces the headings afterwards, so a
-    /// counsellor who starts one and then writes freely is not fighting the app.
-    public var starterBody: String {
-        switch self {
-        case .freeform:
-            return ""
-        case .soap:
-            return "Subjective\n\n\nObjective\n\n\nAssessment\n\n\nPlan\n\n"
-        case .dap:
-            return "Data\n\n\nAssessment\n\n\nPlan\n\n"
-        }
+    // Written and read as a bare string, so the note format and the index cache are byte
+    // for byte what they were when this was an enum.
+    public init(from decoder: Decoder) throws {
+        self.init(rawValue: try decoder.singleValueContainer().decode(String.self))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
     }
 }
 
@@ -196,7 +230,7 @@ public struct NoteRecord: Identifiable, Hashable, Sendable {
             throw VaultError.malformedNote("\"\(writtenRaw)\" is not a readable written date")
         }
 
-        let template = NoteTemplate(rawValue: headers["template"] ?? "freeform") ?? .freeform
+        let template = NoteTemplate(rawValue: headers["template"] ?? "")
 
         var supersedes: NoteID?
         if let raw = headers["supersedes"], !raw.isEmpty {

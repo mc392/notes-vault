@@ -71,6 +71,11 @@ public final class AppModel: ObservableObject {
     @Published public var noteFields = NoteFieldSettings.default {
         didSet { persistNoteFields() }
     }
+    /// The templates the note screen offers, built-in and the counsellor's own. A device
+    /// setting for the same reason as the fields: writing one never touches the vault.
+    @Published public var noteTemplates = NoteTemplateSettings.default {
+        didSet { persistNoteTemplates() }
+    }
     /// When the app asks for a check. Changed through `setReopenGrace`, which asks for one
     /// first — a lock setting anybody can loosen is not a lock setting.
     @Published public private(set) var lockPolicy = LockPolicy.default
@@ -127,11 +132,13 @@ public final class AppModel: ObservableObject {
     private static let queue = DispatchQueue(label: "com.charlottebloor.groundworknotes.vault", qos: .userInitiated)
     private static let retentionKey = "retention.policy"
     private static let noteFieldsKey = "note.fields"
+    private static let noteTemplatesKey = "note.templates"
     private static let lockPolicyKey = "lock.policy"
 
     public init() {
         loadRetentionPolicy()
         loadNoteFields()
+        loadNoteTemplates()
         loadLockPolicy()
     }
 
@@ -959,6 +966,19 @@ public final class AppModel: ObservableObject {
     private func persistNoteFields() {
         guard let data = try? JSONEncoder().encode(noteFields) else { return }
         UserDefaults.standard.set(data, forKey: Self.noteFieldsKey)
+    }
+
+    private func loadNoteTemplates() {
+        guard let data = UserDefaults.standard.data(forKey: Self.noteTemplatesKey),
+              let stored = try? JSONDecoder().decode(NoteTemplateSettings.self, from: data) else { return }
+        // Normalised so a built-in added in a later version appears for someone who has
+        // already saved a template of their own.
+        noteTemplates = stored.normalised()
+    }
+
+    private func persistNoteTemplates() {
+        guard let data = try? JSONEncoder().encode(noteTemplates) else { return }
+        UserDefaults.standard.set(data, forKey: Self.noteTemplatesKey)
     }
 
     private func loadLockPolicy() {

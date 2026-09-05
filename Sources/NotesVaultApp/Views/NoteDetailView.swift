@@ -59,7 +59,7 @@ struct NoteDetailView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(Formatted.dateTime(entry.session, timeZone: entry.sessionTimeZone))
                         .font(.title3.weight(.semibold))
-                    Text("Written \(Formatted.dateTime(entry.written)) on \(entry.device) · \(entry.template.displayName) · \(entry.wordCount) words")
+                    Text("Written \(Formatted.dateTime(entry.written)) on \(entry.device) · \(model.noteTemplates.displayName(for: entry.template)) · \(entry.wordCount) words")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     if siblings.count > 1 {
