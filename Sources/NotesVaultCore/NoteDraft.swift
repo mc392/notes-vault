@@ -20,14 +20,14 @@ public struct NoteDraft: Codable, Equatable, Sendable {
     public let correcting: NoteID?
     public var body: String
     public var sessionDate: Date
-    /// The template's raw value rather than the case itself, so a draft written by a later
-    /// version that has one more template still decodes here instead of being dropped.
+    /// The template's identifier rather than the value itself, which is what a draft
+    /// written on a device carrying a template this one has never seen still decodes as.
     public var templateRawValue: String
     public var fieldValues: [String: String]
     public var savedAt: Date
 
     public var template: NoteTemplate {
-        NoteTemplate(rawValue: templateRawValue) ?? .freeform
+        NoteTemplate(rawValue: templateRawValue)
     }
 
     public init(

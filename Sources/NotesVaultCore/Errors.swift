@@ -6,6 +6,7 @@ import Foundation
 public enum VaultError: Error, Equatable, LocalizedError {
     case invalidClientCode(String, reason: String)
     case invalidNoteField(String, reason: String)
+    case invalidNoteTemplate(String, reason: String)
     case malformedNote(String)
     case unsupportedNoteFormat(Int)
     case noteNotFound(NoteID)
@@ -32,6 +33,8 @@ public enum VaultError: Error, Equatable, LocalizedError {
             return "\"\(code)\" isn't a usable client code — \(reason)."
         case let .invalidNoteField(label, reason):
             return "\"\(label)\" can't be used as a note field — \(reason)."
+        case let .invalidNoteTemplate(name, reason):
+            return "\"\(name)\" can't be used as a template — \(reason)."
         case let .malformedNote(detail):
             return "That note file couldn't be read: \(detail)"
         case let .unsupportedNoteFormat(version):

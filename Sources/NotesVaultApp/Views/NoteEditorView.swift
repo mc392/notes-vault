@@ -49,7 +49,9 @@ struct NoteEditorView: View {
         self.client = client
         self.correcting = correcting
         let session = correcting?.session ?? sessionDate ?? Date()
-        let body = correcting?.body ?? NoteTemplate.freeform.starterBody
+        // A new note opens on Freeform, which prefills nothing by definition. The templates
+        // themselves live in `model`, which an initialiser cannot reach.
+        let body = correcting?.body ?? ""
         let fields = correcting?.extraHeaders ?? [:]
         _sessionDate = State(initialValue: session)
         _template = State(initialValue: correcting?.template ?? .freeform)
@@ -63,6 +65,23 @@ struct NoteEditorView: View {
 
     private var hasContent: Bool {
         !body_.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// The templates the picker offers: this device's, plus the one this note already
+    /// carries if that is not among them. A correction to a note written from a template
+    /// since deleted — or made on another device — must not silently become a Freeform one
+    /// the moment the picker cannot find it.
+    private var offeredTemplates: [NoteTemplateDefinition] {
+        var offered = model.noteTemplates.templates
+        if !offered.contains(where: { $0.id == template.rawValue }) {
+            offered.append(NoteTemplateDefinition(
+                id: template.rawValue,
+                name: template.displayName,
+                body: "",
+                isBuiltIn: false
+            ))
+        }
+        return offered
     }
 
     private var isUnchangedCorrection: Bool {
@@ -101,14 +120,14 @@ struct NoteEditorView: View {
                         SuggestedSessionDates(dates: suggestions, selection: $sessionDate)
                     }
                     Picker("Template", selection: $template) {
-                        ForEach(NoteTemplate.allCases, id: \.self) { value in
-                            Text(value.displayName).tag(value)
+                        ForEach(offeredTemplates) { definition in
+                            Text(definition.name).tag(definition.template)
                         }
                     }
                     .onChange(of: template) { _, newValue in
                         // Only ever fills an empty note. Silently rewriting something
                         // already written would be unforgivable in this app.
-                        if !hasContent { body_ = newValue.starterBody }
+                        if !hasContent { body_ = model.noteTemplates.starterBody(for: newValue) }
                     }
 
                     ForEach(model.noteFields.enabled) { field in

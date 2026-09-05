@@ -83,10 +83,15 @@ struct SettingsView: View {
                 } label: {
                     LabeledContent("Note fields", value: "\(model.noteFields.enabled.count) on")
                 }
+                NavigationLink {
+                    NoteTemplatesSettingsView()
+                } label: {
+                    LabeledContent("Note templates", value: "\(model.noteTemplates.templates.count)")
+                }
             } header: {
                 Text("Notes")
             } footer: {
-                Text("Record more than the date against each session — a session number, a location, or fields you define yourself.")
+                Text("Record more than the date against each session — a session number, a location, or fields you define yourself — and start a note from your own headings rather than only the three the app ships with.")
             }
 
             Section {
