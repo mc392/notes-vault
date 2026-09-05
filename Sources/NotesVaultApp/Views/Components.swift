@@ -1,5 +1,8 @@
 import SwiftUI
 import NotesVaultCore
+#if canImport(UIKit)
+import UIKit
+#endif
 
 extension View {
     /// A sheet that is big enough to hold a form, on whatever it is being shown on.
@@ -48,50 +51,106 @@ extension View {
 /// Sheets that grow with the screen they are on.
 ///
 /// On iPhone a sheet fills the width it is given and there is nothing to decide. On iPad
-/// there is: the system's own default sizes a sheet to a fixed card, and the note editor —
-/// a form, a date picker and a text view that somebody is going to write six paragraphs
-/// into — arrived as the same narrow column on a 13-inch iPad as on an 11-inch one, with
-/// most of the screen unused around it.
+/// there is: the system picks a fixed card, and the note editor — a form, a date picker and
+/// a text view somebody is going to write six paragraphs into — arrived as the same narrow
+/// column on a 13-inch iPad as on an 11-inch one, with most of the screen unused around it.
 ///
-/// So the sheet is proposed a size taken from the space it is actually being presented in:
-/// four fifths of the width, capped so a very large screen does not produce a line of text
-/// too long to read comfortably, and never smaller than the width the form needs. It is
-/// applied only where a screen is big enough for the question to arise; on a compact width
-/// the system's full-width sheet is already the right answer.
+/// The SwiftUI answer is `presentationSizing`, which is iOS 18 and is not in the SDK this
+/// project builds against — so this uses the thing underneath it, which has been there
+/// since iPads had sheets. A sheet on iPad is a UIKit *form sheet*, and a form sheet takes
+/// its size from the presented view controller's `preferredContentSize`. This finds that
+/// controller and gives it one.
 ///
-/// `presentationSizing` is iOS 18. On iOS 17 this does nothing and sheets look as they did.
-private struct SheetSizedToTheScreen: ViewModifier {
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-
+/// The size is worked out from the **window**, not the screen: a sheet in a Stage Manager
+/// or Split View window should fit the space it actually has, not the iPad it is on. Four
+/// fifths of the width, capped so a very wide sheet does not produce lines of text too long
+/// to read comfortably, and never narrower than the form needs.
+///
+/// If a future iOS presents these as page sheets instead, `preferredContentSize` is ignored
+/// and the sheet looks exactly as it does today. Nothing here can make it worse.
+struct SheetSizedToTheScreen: ViewModifier {
     let minWidth: CGFloat
     let minHeight: CGFloat
 
-    @ViewBuilder
     func body(content: Content) -> some View {
-        if #available(iOS 18.0, *), horizontalSizeClass == .regular {
-            content.presentationSizing(
-                ScreenRelativeSizing(minWidth: minWidth, minHeight: minHeight)
-            )
-        } else {
-            content
-        }
+        content.background(
+            SheetSizer(minWidth: minWidth, minHeight: minHeight)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        )
     }
 }
 
-@available(iOS 18.0, *)
-private struct ScreenRelativeSizing: PresentationSizing {
-    /// Past about this, a form stops gaining anything from being wider and its labels and
-    /// values just drift further apart.
-    private static let comfortableWidth: CGFloat = 900
-
+private struct SheetSizer: UIViewRepresentable {
     let minWidth: CGFloat
     let minHeight: CGFloat
 
-    func proposedSize(for root: PresentationSizingRoot, context: PresentationSizingContext) -> ProposedViewSize {
-        let available = context.containerSize
-        let width = min(max(minWidth, available.width * 0.8), Self.comfortableWidth, available.width)
-        let height = min(max(minHeight, available.height * 0.9), available.height)
-        return ProposedViewSize(width: width, height: height)
+    func makeUIView(context: Context) -> ProbeView {
+        let view = ProbeView()
+        view.isUserInteractionEnabled = false
+        view.minWidth = minWidth
+        view.minHeight = minHeight
+        return view
+    }
+
+    func updateUIView(_ view: ProbeView, context: Context) {
+        view.minWidth = minWidth
+        view.minHeight = minHeight
+        view.applySize()
+    }
+
+    /// A zero-sized view behind the sheet's content, there only to be somewhere to stand
+    /// while looking up the responder chain.
+    final class ProbeView: UIView {
+        /// Past about this, a form stops gaining anything from being wider and its labels
+        /// and values only drift further apart.
+        private static let comfortableWidth: CGFloat = 900
+
+        var minWidth: CGFloat = 0
+        var minHeight: CGFloat = 0
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            applySize()
+        }
+
+        /// Rotation and Stage Manager resizes arrive here rather than through SwiftUI.
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            applySize()
+        }
+
+        func applySize() {
+            // Only where there is a choice to make. On a compact width the sheet already
+            // fills the screen and a preferred size could only shrink it.
+            guard traitCollection.horizontalSizeClass == .regular else { return }
+            guard let available = window?.bounds.size, available.width > 0, let sheet = presentedController else { return }
+
+            let width = min(max(minWidth, available.width * 0.8), Self.comfortableWidth, available.width)
+            let height = min(max(minHeight, available.height * 0.9), available.height)
+            let size = CGSize(width: width.rounded(), height: height.rounded())
+
+            // Guarded, because setting this resizes the sheet, which lays this view out
+            // again, which lands back here.
+            if sheet.preferredContentSize != size {
+                sheet.preferredContentSize = size
+            }
+        }
+
+        /// The view controller that was *presented* — the sheet itself, rather than the
+        /// navigation controller or hosting controller inside it. It is the root of its own
+        /// containment hierarchy, and something presented it.
+        private var presentedController: UIViewController? {
+            var responder: UIResponder? = next
+            while let current = responder {
+                if var controller = current as? UIViewController {
+                    while let parent = controller.parent { controller = parent }
+                    return controller.presentingViewController == nil ? nil : controller
+                }
+                responder = current.next
+            }
+            return nil
+        }
     }
 }
 #endif
