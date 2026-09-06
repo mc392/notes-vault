@@ -16,22 +16,49 @@ struct NoteTemplatesSettingsView: View {
     var body: some View {
         List {
             Section {
-                ForEach(model.noteTemplates.templates) { definition in
+                ForEach(model.noteTemplates.offered) { definition in
                     Button {
                         editing = TemplateEdit(definition)
                     } label: {
                         row(definition)
                     }
                     .buttonStyle(.plain)
-                    // Built-ins do not offer the swipe at all, rather than offering it and
+                    // Freeform does not offer the swipe at all, rather than offering it and
                     // then quietly doing nothing.
-                    .deleteDisabled(definition.isBuiltIn)
+                    .deleteDisabled(!definition.isRemovable)
+                    // The swipe is the iPhone gesture and there is no such thing on a Mac,
+                    // where this is the only way to reach it. Freeform's is shown greyed
+                    // rather than left out, so the rule is visible rather than mysterious.
+                    .contextMenu {
+                        Button("Remove", role: .destructive) { remove(definition) }
+                            .disabled(!definition.isRemovable)
+                    }
                 }
-                .onDelete(perform: deleteCustomTemplates)
+                .onDelete(perform: deleteTemplates)
             } header: {
                 Text("Templates")
             } footer: {
-                Text("Choosing a template on a new note fills in its headings and then gets out of the way. Swipe one you added to remove it — that only stops it being offered on new notes, and notes already written keep every word of what they say.")
+                Text("Choosing a template on a new note fills in its headings and then gets out of the way. Swipe one to remove it, or right-click it on a Mac — that only stops it being offered on new notes, and notes already written keep every word of what they say.")
+            }
+
+            if !model.noteTemplates.removed.isEmpty {
+                Section {
+                    ForEach(model.noteTemplates.removed) { definition in
+                        HStack {
+                            Text(definition.name)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button("Put back") {
+                                model.noteTemplates.restoreTemplate(id: definition.id)
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                    }
+                } header: {
+                    Text("Removed")
+                } footer: {
+                    Text("The ones that ship with the app are kept rather than deleted, so they come back with the headings they always had. A template you wrote yourself is gone when you remove it.")
+                }
             }
 
             Section {
@@ -41,7 +68,7 @@ struct NoteTemplatesSettingsView: View {
                     Label("Add a template", systemImage: "plus")
                 }
             } footer: {
-                Text("The three above cannot be changed or removed, but a new template can start from any of them — which is how you get SOAP with one more heading.")
+                Text("The ones that ship with the app cannot be changed, but a new template can start from any of them — which is how you get SOAP with one more heading.")
             }
 
             Section {
@@ -92,22 +119,28 @@ struct NoteTemplatesSettingsView: View {
     }
 
     /// The headings on one line, so the list says what each template actually does rather
-    /// than making you open all of them to find out.
+    /// than making you open all of them to find out. Read through the same Markdown parser
+    /// the note screen uses, so a heading reads as "Subjective" rather than "## Subjective".
     private func summary(of definition: NoteTemplateDefinition) -> String {
-        let headings = definition.body
-            .split(separator: "\n")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
+        let headings = NoteMarkdown.blocks(in: definition.body)
+            .map(\.content)
+            .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
         return headings.isEmpty ? "Starts empty" : headings.joined(separator: " · ")
     }
 
-    private func deleteCustomTemplates(at offsets: IndexSet) {
-        let ids = offsets
-            .map { model.noteTemplates.templates[$0] }
-            .filter { !$0.isBuiltIn }
-            .map(\.id)
-        for id in ids {
-            model.noteTemplates.removeCustomTemplate(id: id)
+    private func deleteTemplates(at offsets: IndexSet) {
+        for definition in offsets.map({ model.noteTemplates.offered[$0] }) {
+            remove(definition)
+        }
+    }
+
+    /// Errors go to the model's banner rather than being swallowed: the one thing that can
+    /// fail here is removing Freeform, and saying why is better than a row that will not go.
+    private func remove(_ definition: NoteTemplateDefinition) {
+        do {
+            try model.noteTemplates.removeTemplate(id: definition.id)
+        } catch {
+            model.errorMessage = (error as? VaultError)?.errorDescription ?? error.localizedDescription
         }
     }
 }
@@ -163,7 +196,7 @@ private struct TemplateEditorView: View {
                     if edit.isNew {
                         Picker("Start from", selection: $startingFrom) {
                             Text("Empty").tag(NoteTemplate.freeform)
-                            ForEach(model.noteTemplates.templates.filter { $0.id != NoteTemplate.freeform.rawValue }) { definition in
+                            ForEach(model.noteTemplates.offered.filter { $0.id != NoteTemplate.freeform.rawValue }) { definition in
                                 Text(definition.name).tag(definition.template)
                             }
                         }
@@ -177,7 +210,7 @@ private struct TemplateEditorView: View {
                     }
                 } footer: {
                     Text(edit.isReadOnly
-                         ? "This is one of the templates the app ships with, so it cannot be changed. Add a template to make your own version of it."
+                         ? "This is one of the templates the app ships with, so it cannot be changed. Add a template to make your own version of it — or remove this one from the list, which you can undo later."
                          : "The name is what you pick on a new note, and what is written into the note itself.")
                 }
 
@@ -185,12 +218,18 @@ private struct TemplateEditorView: View {
                     if edit.isReadOnly {
                         // Shown rather than put in a disabled editor: the text view under
                         // that editor does not honour `.disabled`, and a box that lets you
-                        // type into a template you cannot save would be a small lie.
-                        Text(body_.isEmpty ? "Starts empty." : body_)
-                            .font(body_.isEmpty ? .footnote : .body)
-                            .foregroundStyle(body_.isEmpty ? .secondary : .primary)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                        // type into a template you cannot save would be a small lie. Drawn
+                        // the way the note screen draws it, so what is promised here is what
+                        // a note started from it actually looks like.
+                        if body_.isEmpty {
+                            Text("Starts empty.")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        } else {
+                            NoteBodyText(body: body_)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
                     } else {
                         NoteBodyEditor(text: $body_)
                             .frame(minHeight: 240)
@@ -199,7 +238,7 @@ private struct TemplateEditorView: View {
                     Text("Headings")
                 } footer: {
                     Text(edit.isReadOnly
-                         ? "This is exactly what a new note using this template starts with."
+                         ? "This is exactly what a new note using this template starts with, drawn the way it will read."
                          : "Exactly what a new note using this template starts with. Leave blank lines under each heading so there is somewhere to write.")
                 }
             }

@@ -60,12 +60,37 @@ final class NoteTemplatesTests: XCTestCase {
         XCTAssertEqual(settings.starterBody(for: added.template), "Presentation\n\n\nRisk\n")
     }
 
-    func testBuiltInsCannotBeChangedOrRemoved() {
+    func testBuiltInsCannotBeChanged() {
         var settings = NoteTemplateSettings.default
         XCTAssertThrowsError(try settings.updateCustomTemplate(id: "soap", name: "My SOAP", body: ""))
+    }
 
-        settings.removeCustomTemplate(id: "soap")
-        XCTAssertEqual(settings.templates.count, 3, "a built-in is still there afterwards")
+    /// Removing one of the app's own templates takes it off the picker and keeps it, so it
+    /// comes back with the headings it always had rather than being retyped.
+    func testABuiltInCanBeRemovedAndPutBack() throws {
+        var settings = NoteTemplateSettings.default
+        let headings = settings.starterBody(for: .soap)
+
+        try settings.removeTemplate(id: "soap")
+
+        XCTAssertEqual(settings.offered.map(\.id), ["freeform", "dap"])
+        XCTAssertEqual(settings.removed.map(\.id), ["soap"])
+        XCTAssertEqual(settings.displayName(for: .soap), "SOAP", "a note written from it still reads back")
+
+        settings.restoreTemplate(id: "soap")
+
+        XCTAssertEqual(settings.offered.map(\.id), ["freeform", "soap", "dap"])
+        XCTAssertTrue(settings.removed.isEmpty)
+        XCTAssertEqual(settings.starterBody(for: .soap), headings)
+    }
+
+    /// A note has to be able to start from a blank page.
+    func testFreeformCannotBeRemoved() {
+        var settings = NoteTemplateSettings.default
+        XCTAssertThrowsError(try settings.removeTemplate(id: "freeform")) { error in
+            XCTAssertTrue(((error as? VaultError)?.errorDescription ?? "").contains("cannot be removed"))
+        }
+        XCTAssertEqual(settings.offered.map(\.id), ["freeform", "soap", "dap"])
     }
 
     /// Removing a template stops it being offered and does nothing else. Notes written from
@@ -73,9 +98,9 @@ final class NoteTemplatesTests: XCTestCase {
     func testRemovingATemplateLeavesNotesWrittenFromItReadable() throws {
         var settings = NoteTemplateSettings.default
         let added = try settings.addCustomTemplate(name: "Trauma review", body: "Presentation\n")
-        settings.removeCustomTemplate(id: added.id)
+        try settings.removeTemplate(id: added.id)
 
-        XCTAssertEqual(settings.templates.count, 3)
+        XCTAssertEqual(settings.templates.count, 3, "one of the counsellor's own goes for good")
         XCTAssertNil(settings.definition(for: added.template))
         XCTAssertEqual(settings.displayName(for: added.template), "Trauma review")
         XCTAssertEqual(settings.starterBody(for: added.template), "")
@@ -91,6 +116,44 @@ final class NoteTemplatesTests: XCTestCase {
 
         XCTAssertEqual(normalised.templates.map(\.id), ["freeform", "soap", "dap", "trauma-review"])
         XCTAssertEqual(normalised.custom.map(\.name), ["Trauma review"])
+    }
+
+    /// The counterpart to the test above: normalising must not undo a removal. Settings are
+    /// normalised every time they are loaded, so a built-in that came back here would come
+    /// back on every launch.
+    func testNormalisingLeavesARemovedBuiltInRemoved() throws {
+        var settings = NoteTemplateSettings.default
+        try settings.removeTemplate(id: "dap")
+
+        let normalised = settings.normalised()
+
+        XCTAssertEqual(normalised.offered.map(\.id), ["freeform", "soap"])
+        XCTAssertEqual(normalised.removed.map(\.id), ["dap"])
+    }
+
+    /// Settings written by a version that had no removable built-ins have no such flag in
+    /// them. They have to load, with everything still offered — the alternative is a
+    /// counsellor's own templates silently reset to the defaults.
+    func testSettingsSavedBeforeTemplatesCouldBeRemovedStillLoad() throws {
+        let legacy = """
+        {"templates":[{"id":"freeform","name":"Freeform","body":"","isBuiltIn":true},\
+        {"id":"trauma-review","name":"Trauma review","body":"Presentation\\n","isBuiltIn":false}]}
+        """
+        let decoded = try JSONDecoder().decode(NoteTemplateSettings.self, from: Data(legacy.utf8))
+
+        XCTAssertEqual(decoded.offered.map(\.id), ["freeform", "trauma-review"])
+        XCTAssertTrue(decoded.removed.isEmpty)
+        XCTAssertEqual(decoded.normalised().offered.map(\.id), ["freeform", "soap", "dap", "trauma-review"])
+    }
+
+    /// The headings the app ships with are Markdown subheadings, so a note started from one
+    /// reads back as a formatted note rather than as lines that happen to be short.
+    func testTheBuiltInHeadingsAreWrittenAsSubheadings() {
+        let settings = NoteTemplateSettings.default
+        XCTAssertEqual(
+            NoteMarkdown.blocks(in: settings.starterBody(for: .soap)).filter { $0 != .blank },
+            [.heading("Subjective"), .heading("Objective"), .heading("Assessment"), .heading("Plan")]
+        )
     }
 
     func testSettingsSurviveARoundTripThroughJSON() throws {

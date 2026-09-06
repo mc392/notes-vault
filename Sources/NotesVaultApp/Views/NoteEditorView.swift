@@ -67,14 +67,14 @@ struct NoteEditorView: View {
         !body_.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    /// The templates the picker offers: this device's, plus the one this note already
-    /// carries if that is not among them. A correction to a note written from a template
-    /// since deleted — or made on another device — must not silently become a Freeform one
-    /// the moment the picker cannot find it.
+    /// The templates the picker offers: the ones this device offers, plus the one this note
+    /// already carries if that is not among them. A correction to a note written from a
+    /// template since removed — or made on another device — must not silently become a
+    /// Freeform one the moment the picker cannot find it.
     private var offeredTemplates: [NoteTemplateDefinition] {
-        var offered = model.noteTemplates.templates
+        var offered = model.noteTemplates.offered
         if !offered.contains(where: { $0.id == template.rawValue }) {
-            offered.append(NoteTemplateDefinition(
+            offered.append(model.noteTemplates.definition(for: template) ?? NoteTemplateDefinition(
                 id: template.rawValue,
                 name: template.displayName,
                 body: "",

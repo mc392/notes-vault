@@ -86,7 +86,7 @@ struct SettingsView: View {
                 NavigationLink {
                     NoteTemplatesSettingsView()
                 } label: {
-                    LabeledContent("Note templates", value: "\(model.noteTemplates.templates.count)")
+                    LabeledContent("Note templates", value: "\(model.noteTemplates.offered.count)")
                 }
             } header: {
                 Text("Notes")

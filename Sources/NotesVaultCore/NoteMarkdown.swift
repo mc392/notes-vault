@@ -324,3 +324,186 @@ public extension NoteMarkdown {
             }
     }
 }
+
+// MARK: - Showing the formatting while it is being written
+
+/// How one stretch of a note body should be drawn.
+///
+/// An option set rather than a list of cases because these combine: a bold phrase inside a
+/// subheading is one stretch of text that is both.
+public struct NoteMarkdownAppearance: OptionSet, Hashable, Sendable {
+    public let rawValue: Int
+
+    public init(rawValue: Int) { self.rawValue = rawValue }
+
+    public static let heading = NoteMarkdownAppearance(rawValue: 1 << 0)
+    public static let bold = NoteMarkdownAppearance(rawValue: 1 << 1)
+    public static let italic = NoteMarkdownAppearance(rawValue: 1 << 2)
+    /// The characters that switch a style on — `## `, `- `, `**`. They stay in the text,
+    /// because the text *is* the note, but they are drawn faintly so what the counsellor
+    /// reads back is a subheading rather than two hashes and a subheading.
+    public static let marker = NoteMarkdownAppearance(rawValue: 1 << 3)
+}
+
+/// One stretch of a note body and how to draw it.
+///
+/// Offsets are UTF-16, like `MarkdownEdit`, so they drop straight into an `NSRange` on
+/// either platform's text view without a conversion that could be wrong about an emoji.
+public struct NoteMarkdownRun: Equatable, Sendable {
+    public let start: Int
+    public let length: Int
+    public let appearance: NoteMarkdownAppearance
+
+    public init(start: Int, length: Int, appearance: NoteMarkdownAppearance) {
+        self.start = start
+        self.length = length
+        self.appearance = appearance
+    }
+}
+
+public extension NoteMarkdown {
+
+    /// Where the formatting is in a body, so the editor can draw it instead of showing its
+    /// markup.
+    ///
+    /// This does not touch the text and could not: the note on disk is Markdown, and every
+    /// promise this app makes about a decrypted note opening in any text editor forever
+    /// rests on that staying literally true. What it changes is only how the characters are
+    /// *painted* — so `## Presenting concern` looks like a subheading while the file still
+    /// says `## Presenting concern`.
+    ///
+    /// Only styled stretches are returned, and later ones may sit inside earlier ones (bold
+    /// inside a heading). A caller draws its own plain style over everything first and then
+    /// applies these in order.
+    ///
+    /// It recognises exactly what `blocks(in:)` recognises, because the same note has to
+    /// look the same in the editor as it does when it is read back.
+    static func styleRuns(in body: String) -> [NoteMarkdownRun] {
+        let units = Array(body.utf16)
+        var runs: [NoteMarkdownRun] = []
+        var lineStart = 0
+
+        while true {
+            var lineEnd = lineStart
+            while lineEnd < units.count, units[lineEnd] != newline { lineEnd += 1 }
+
+            // A `\r\n` ending leaves the carriage return out of the line's content, so a
+            // note written on another machine does not get a styled invisible character.
+            var contentEnd = lineEnd
+            if contentEnd > lineStart, units[contentEnd - 1] == carriageReturn { contentEnd -= 1 }
+
+            runs.append(contentsOf: lineRuns(units, from: lineStart, to: contentEnd))
+
+            if lineEnd >= units.count { break }
+            lineStart = lineEnd + 1
+        }
+        return runs
+    }
+
+    // MARK: - One line at a time
+
+    private static func lineRuns(_ units: [UInt16], from start: Int, to end: Int) -> [NoteMarkdownRun] {
+        guard start < end else { return [] }
+        var runs: [NoteMarkdownRun] = []
+
+        // Leading whitespace belongs to nobody: the marker is whatever follows it.
+        var markerStart = start
+        while markerStart < end, units[markerStart] == space || units[markerStart] == tab { markerStart += 1 }
+
+        var isHeading = false
+        var contentStart = markerStart
+
+        var hashes = 0
+        var afterHashes = markerStart
+        while afterHashes < end, units[afterHashes] == hash, hashes < 3 {
+            hashes += 1
+            afterHashes += 1
+        }
+
+        if hashes > 0, afterHashes < end, units[afterHashes] == space {
+            isHeading = true
+            contentStart = afterHashes + 1
+            runs.append(NoteMarkdownRun(start: markerStart, length: contentStart - markerStart, appearance: .marker))
+        } else if markerStart + 1 < end,
+                  units[markerStart] == hyphen || units[markerStart] == asterisk,
+                  units[markerStart + 1] == space {
+            contentStart = markerStart + 2
+            runs.append(NoteMarkdownRun(start: markerStart, length: 2, appearance: .marker))
+        }
+
+        if isHeading, contentStart < end {
+            runs.append(NoteMarkdownRun(start: contentStart, length: end - contentStart, appearance: .heading))
+        }
+
+        runs.append(contentsOf: emphasisRuns(units, from: contentStart, to: end, within: isHeading ? .heading : []))
+        return runs
+    }
+
+    /// Bold and italic, inside one line. Markers do not span lines in Markdown, and a note
+    /// with a stray asterisk in it should not turn the next paragraph bold.
+    private static func emphasisRuns(
+        _ units: [UInt16],
+        from start: Int,
+        to end: Int,
+        within block: NoteMarkdownAppearance
+    ) -> [NoteMarkdownRun] {
+        var runs: [NoteMarkdownRun] = []
+        var index = start
+
+        while index < end {
+            guard units[index] == asterisk else {
+                index += 1
+                continue
+            }
+
+            let isBold = index + 1 < end && units[index + 1] == asterisk
+            let markerLength = isBold ? 2 : 1
+            let contentStart = index + markerLength
+
+            // Nothing is styled until the closing marker is typed. Half of a `**` is what
+            // every bold phrase looks like on the way to being written.
+            guard let closing = closingMarker(units, from: contentStart, to: end, length: markerLength) else {
+                index += markerLength
+                continue
+            }
+
+            runs.append(NoteMarkdownRun(start: index, length: markerLength, appearance: .marker))
+            runs.append(NoteMarkdownRun(
+                start: contentStart,
+                length: closing - contentStart,
+                appearance: block.union(isBold ? .bold : .italic)
+            ))
+            runs.append(NoteMarkdownRun(start: closing, length: markerLength, appearance: .marker))
+            index = closing + markerLength
+        }
+        return runs
+    }
+
+    /// The next run of at least `length` asterisks with something in front of it. An empty
+    /// pair — the `****` the bold button leaves the caret sitting inside — is not a match,
+    /// so pressing bold does not immediately paint four asterisks.
+    private static func closingMarker(_ units: [UInt16], from start: Int, to end: Int, length: Int) -> Int? {
+        var index = start
+        while index + length <= end {
+            guard units[index] == asterisk else {
+                index += 1
+                continue
+            }
+            var run = 0
+            while index + run < end, units[index + run] == asterisk { run += 1 }
+            if run >= length, index > start { return index }
+            index += max(run, 1)
+        }
+        return nil
+    }
+
+    // MARK: - The characters this reads, as UTF-16
+
+    private static let newline: UInt16 = 10
+    private static let carriageReturn: UInt16 = 13
+    private static let tab: UInt16 = 9
+    private static let space: UInt16 = 32
+    private static let hash: UInt16 = 35
+    private static let asterisk: UInt16 = 42
+    private static let hyphen: UInt16 = 45
+}
