@@ -30,7 +30,8 @@ public struct NoteTemplate: RawRepresentable, Hashable, Codable, Sendable, Ident
     private static let freeformIdentifier = "freeform"
 
     /// The three this app has always shipped. They are ordinary templates — a counsellor's
-    /// own sits beside them and behaves identically — they simply cannot be deleted.
+    /// own sits beside them and behaves identically — and SOAP and DAP can be taken off the
+    /// picker like any other. Freeform stays, because it is what a note with no template is.
     public static let freeform = NoteTemplate(rawValue: freeformIdentifier)
     public static let soap = NoteTemplate(rawValue: "soap")
     public static let dap = NoteTemplate(rawValue: "dap")

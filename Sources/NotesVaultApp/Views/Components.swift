@@ -245,6 +245,55 @@ struct RecoveryKeyConfirmation: View {
     }
 }
 
+/// Renders a note's Markdown.
+///
+/// Deliberately a small renderer rather than a library: this app supports subheadings,
+/// bullets, bold and italic and nothing else, and every one of those is still readable as
+/// plain text if this code disappears tomorrow. `AttributedString(markdown:)` handles the
+/// inline markers; the block markers are handled here, because it does not do headings.
+///
+/// Used twice: reading a note back, and the preview in the editor. Deliberately the same
+/// view in both places — a preview that rendered a note differently from the screen it will
+/// be read on would be worse than none.
+struct NoteBodyText: View {
+    let body_: String
+
+    init(body: String) { self.body_ = body }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(Array(NoteMarkdown.blocks(in: body_).enumerated()), id: \.offset) { _, block in
+                switch block {
+                case let .heading(text):
+                    Text(inline(text))
+                        .font(.headline)
+                        .padding(.top, 6)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                case let .bullet(text):
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text("•").font(.body).foregroundStyle(.secondary)
+                        Text(inline(text)).font(.body)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                case let .paragraph(text):
+                    Text(inline(text))
+                        .font(.body)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                case .blank:
+                    Spacer().frame(height: 2)
+                }
+            }
+        }
+        .textSelection(.enabled)
+    }
+
+    /// Falls back to the raw text if the markers do not parse, so a stray asterisk in a
+    /// clinical note never costs the counsellor a line of their record.
+    private func inline(_ text: String) -> AttributedString {
+        (try? AttributedString(markdown: text)) ?? AttributedString(text)
+    }
+}
+
 struct StatusChip: View {
     let status: ClientStatus
 

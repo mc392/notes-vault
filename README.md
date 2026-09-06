@@ -118,10 +118,34 @@ behind a heading with a count, the way the tracker app shows them. After a few y
 a caseload is ended, and none of it is today's work. Searching opens every group — a search
 that hid its own matches behind a collapsed heading would be worse than no grouping at all.
 
-**Templates are yours.** Freeform, SOAP and DAP ship with the app and cannot be removed, but
-Settings › Note templates is where you write your own — a name and the headings it fills in,
-starting from one of the built-ins if that is nearly right. A template only ever *prefills*
-the editor; nothing enforces it afterwards.
+**The formatting shows, rather than its markup.** The bar above the note gives bold, italic,
+a subheading and bullets, and what you see while typing is the formatting itself: a
+subheading is drawn large and bold with its `##` faded back into the margin, a bold phrase is
+bold, and a bullet's dash sits quietly in front of the line. The eye button previews the note
+exactly as it will look when it is read back.
+
+The characters are still there and are still ordinary text, because that is the promise the
+whole thing rests on — a decrypted note is a file that opens in any text editor on any
+machine forever. Nothing about the file changed here; only what the editor paints on top of
+it. Which is also why the markers are faded rather than hidden: an editor that drew text the
+file does not contain would be lying about the record.
+
+**Templates are yours.** Freeform, SOAP and DAP ship with the app, and Settings › Note
+templates is where you write your own — a name and the headings it fills in, starting from
+one of the built-ins if that is nearly right. A template only ever *prefills* the editor;
+nothing enforces it afterwards.
+
+**And you can throw ours away.** Swipe a template to remove it, or right-click it on a Mac.
+One of the app's own is hidden rather than deleted, so a "Removed" section can put it back
+with the headings it always had; one you wrote yourself is gone, because you have the only
+copy of it. Freeform stays either way — it is not really a template, it is what a note with
+no template is, and every note has to be able to start from a blank page. Removing a template
+only stops it being offered on new notes: notes already written from it keep every word of
+what they say and still name it when they are read back.
+
+The headings the built-ins fill in are Markdown subheadings (`## Subjective`), so a note
+started from SOAP reads back as four subheadings rather than four lines that happen to be
+short.
 
 A template's identifier is derived from its name once (`Trauma review` → `trauma-review`) and
 never changes, so renaming one does not re-label the notes already written from it. That
@@ -480,7 +504,7 @@ saying so plainly is worth more than a green tick.
 | Cryptomator's vault format | `CryptomatorEngine` + `VaultBootstrap`. All cryptography is delegated; there is no bespoke primitive to review |
 | Freemium | Not built. No paywall, no entitlement check, no analytics — nothing to unpick when the free/paid line is decided |
 | Separate brand, shared trust story | **Revised 30 August 2026.** Named *GroundWork Notes* and given GroundWork's icon language, so the trust story is shared openly rather than implied. Still a standalone package with its own bundle ID and no shared code — the tie is brand, not architecture |
-| Configurable templates, freeform default | `NoteTemplateSettings`. Freeform, SOAP and DAP ship with the app; a counsellor writes their own beside them, starting from one of those if they want. A template prefills and then gets out of the way; nothing enforces headings |
+| Configurable templates, freeform default | `NoteTemplateSettings`. Freeform, SOAP and DAP ship with the app; a counsellor writes their own beside them, starting from one of those if they want, and removes any of ours they do not use — hidden rather than deleted, so it can be put back. Freeform stays, because it is what a note with no template is. A template prefills and then gets out of the way; nothing enforces headings |
 | Recovery phrase, shown once | `RecoveryKey` + `RecoveryKeyView` — **see the deviation below** |
 | Identity register external | `ClientCode` rejects anything with a space or punctuation. There is nowhere to put a name |
 | MVP = sole clinical record system | Export, retention, corrections and recovery are all finished paths, not stubs |
