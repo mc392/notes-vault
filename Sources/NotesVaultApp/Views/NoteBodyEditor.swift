@@ -39,6 +39,14 @@ struct NoteBodyEditor: View {
     /// somebody wants to see the finished thing.
     @State private var previewing = false
 
+    /// `isWriting` is optional because the template settings screen uses this editor too,
+    /// and has nothing that needs to get out of the way when the keyboard appears — it is a
+    /// row in a settings form, not a screen somebody writes a session up on.
+    init(text: Binding<String>, isWriting: Binding<Bool> = .constant(false)) {
+        _text = text
+        _isWriting = isWriting
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             Group {
