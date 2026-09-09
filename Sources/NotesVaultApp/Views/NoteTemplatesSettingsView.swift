@@ -231,8 +231,17 @@ private struct TemplateEditorView: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
                     } else {
+                        // The border belongs to this call site rather than to the editor.
+                        // On the note screen the editor *is* the screen and a box drawn
+                        // round it would only make it look smaller; here it is one row in a
+                        // settings form and needs an edge to be a box at all.
                         NoteBodyEditor(text: $body_)
                             .frame(minHeight: 240)
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .strokeBorder(.quaternary, lineWidth: 1)
+                            }
                     }
                 } header: {
                     Text("Headings")
