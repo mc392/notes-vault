@@ -23,6 +23,14 @@ struct NoteEditorView: View {
     @State private var confirmingDiscard = false
     @State private var prefilled = false
 
+    /// Whether the session details are open. They start open — the date and the template are
+    /// the first decisions — and fold themselves away the moment the caret lands in the note,
+    /// which on a phone is the difference between writing into a letterbox and writing on a
+    /// page. One tap on the summary line brings them back.
+    @State private var detailsExpanded = true
+    /// Set by the editor while the caret is in the note.
+    @State private var isWriting = false
+
     /// What the screen looked like before anything was typed. The autosave compares
     /// against these rather than against emptiness, so a template's starter headings or a
     /// correction's existing text is not mistaken for work in progress.
@@ -94,57 +102,24 @@ struct NoteEditorView: View {
 
     var body: some View {
         NavigationStack {
-            Form {
+            // A plain stack rather than a Form, because the note has to be able to take the
+            // whole screen. Inside a Form the editor was one scrolling row among others,
+            // with a fixed height the keyboard then covered; here it is the element that
+            // stretches, and the keyboard shortens the stack rather than sitting over it.
+            VStack(spacing: 0) {
                 if let restoredAt = restoredDraftSavedAt {
-                    Section { restoredDraftNotice(savedAt: restoredAt) }
+                    restoredDraftNotice(savedAt: restoredAt)
+                    Divider()
                 }
 
-                if correcting != nil {
-                    Section {
-                        Label(
-                            "This is filed as a correction. The earlier note stays in the record and is still readable.",
-                            systemImage: "arrow.triangle.branch"
-                        )
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                    }
-                }
+                sessionDetails
 
-                Section("Session") {
-                    DatePicker("Date and time", selection: $sessionDate)
-                        #if os(macOS)
-                        .datePickerStyle(.compact)
-                        #endif
+                Divider()
 
-                    if !suggestions.isEmpty {
-                        SuggestedSessionDates(dates: suggestions, selection: $sessionDate)
-                    }
-                    Picker("Template", selection: $template) {
-                        ForEach(offeredTemplates) { definition in
-                            Text(definition.name).tag(definition.template)
-                        }
-                    }
-                    .onChange(of: template) { _, newValue in
-                        // Only ever fills an empty note. Silently rewriting something
-                        // already written would be unforgivable in this app.
-                        if !hasContent { body_ = model.noteTemplates.starterBody(for: newValue) }
-                    }
-
-                    ForEach(model.noteFields.enabled) { field in
-                        NoteFieldRow(field: field, value: binding(for: field))
-                    }
-                }
-
-                Section {
-                    NoteBodyEditor(text: $body_)
-                        .frame(minHeight: 280)
-                } header: {
-                    Text("Note")
-                } footer: {
-                    Text("\(body_.wordCount) words. Encrypted on this device before it is written to the folder.")
-                }
+                NoteBodyEditor(text: $body_, isWriting: $isWriting)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .formStyle(.grouped)
+            .background(.background)
             .navigationTitle(correcting == nil ? "New note — \(client.rawValue)" : "Correction — \(client.rawValue)")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -189,14 +164,32 @@ struct NoteEditorView: View {
             } message: {
                 Text("It has not been saved to the vault yet.")
             }
+            // The large title cost about a fifth of a phone screen to say something the
+            // counsellor tapped a moment ago to get here.
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
         }
-        .vaultSheet(minWidth: 640, minHeight: 660)
+        .vaultSheet(minWidth: 680, minHeight: 720)
         .onAppear(perform: prefillSessionNumber)
         .task { await restoreDraft() }
+        .onChange(of: isWriting) { _, writing in
+            // Only ever closes them, and only on the way *into* the note. Reopening them
+            // while the keyboard is up leaves them open, because nothing here fires again
+            // until the caret leaves the note and comes back.
+            guard writing, Self.detailsFoldAway else { return }
+            withAnimation(.snappy) { detailsExpanded = false }
+        }
         .onChange(of: body_) { _, _ in scheduleDraftSave() }
         .onChange(of: fieldValues) { _, _ in scheduleDraftSave() }
         .onChange(of: sessionDate) { _, _ in scheduleDraftSave() }
-        .onChange(of: template) { _, _ in scheduleDraftSave() }
+        .onChange(of: template) { _, newValue in
+            // Only ever fills an empty note. Silently rewriting something already written
+            // would be unforgivable in this app. Handled here rather than on the picker
+            // itself, so it still holds when the details panel is folded away.
+            if !hasContent { body_ = model.noteTemplates.starterBody(for: newValue) }
+            scheduleDraftSave()
+        }
         .onChange(of: scenePhase) { _, phase in
             // Leaving `.active` is the last moment anything is guaranteed to run: iOS may
             // kill the app from the background without another word. The debounce is
@@ -207,18 +200,153 @@ struct NoteEditorView: View {
         }
     }
 
+    // MARK: - The session details
+
+    /// A phone has a keyboard covering half of it and needs the room; a Mac window does not,
+    /// and a panel that shut itself every time the pointer entered the text would be an
+    /// irritation rather than a help.
+    private static var detailsFoldAway: Bool {
+        #if os(iOS)
+        return true
+        #else
+        return false
+        #endif
+    }
+
+    /// The whole of the session in one line: enough to check at a glance without opening
+    /// anything, and the way back to the controls when something needs changing.
+    private var detailsSummary: String {
+        "\(Formatted.dateTime(sessionDate))  ·  \(model.noteTemplates.displayName(for: template))"
+    }
+
+    private var sessionDetails: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.snappy) { detailsExpanded.toggle() }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "calendar")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+
+                    Text(detailsSummary)
+                        .font(.footnote.weight(.medium))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+
+                    if correcting != nil {
+                        Text("Correction")
+                            .font(.caption2.weight(.medium))
+                            .padding(.vertical, 3)
+                            .padding(.horizontal, 7)
+                            .background(Color.blue.opacity(0.15), in: Capsule())
+                            .foregroundStyle(.blue)
+                    }
+
+                    Spacer(minLength: 4)
+
+                    Image(systemName: "chevron.down")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(detailsExpanded ? 180 : 0))
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(detailsExpanded ? "Hide session details" : "Show session details")
+            .accessibilityValue(detailsSummary)
+
+            if detailsExpanded {
+                detailsPanel
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 12)
+                    .transition(.opacity)
+            }
+        }
+    }
+
+    private var detailsPanel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(spacing: 0) {
+                detailRow {
+                    LabeledContent("Date and time") {
+                        DatePicker("", selection: $sessionDate)
+                            .labelsHidden()
+                            #if os(macOS)
+                            .datePickerStyle(.compact)
+                            #endif
+                    }
+                }
+
+                if !suggestions.isEmpty {
+                    Divider()
+                    detailRow {
+                        SuggestedSessionDates(dates: suggestions, selection: $sessionDate)
+                    }
+                }
+
+                Divider()
+                detailRow {
+                    LabeledContent("Template") {
+                        Picker("Template", selection: $template) {
+                            ForEach(offeredTemplates) { definition in
+                                Text(definition.name).tag(definition.template)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .labelsHidden()
+                    }
+                }
+
+                ForEach(model.noteFields.enabled) { field in
+                    Divider()
+                    detailRow {
+                        NoteFieldRow(field: field, value: binding(for: field))
+                    }
+                }
+            }
+            .background(.quaternary, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+            if correcting != nil {
+                Label(
+                    "This is filed as a correction. The earlier note stays in the record and is still readable.",
+                    systemImage: "arrow.triangle.branch"
+                )
+            }
+
+            // The promise the whole product rests on, kept where somebody setting up a note
+            // will read it — rather than under the editor, where it was competing with the
+            // note itself for the bottom of the screen.
+            Label("Encrypted on this device before it is written to the folder.", systemImage: "lock.fill")
+        }
+        .font(.footnote)
+        .foregroundStyle(.secondary)
+    }
+
+    private func detailRow<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        content()
+            .font(.body)
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+    }
+
     // MARK: - Draft autosave
 
-    /// One line, dismissible, at the top of the form.
+    /// One line, dismissible, above everything else on the screen.
     ///
     /// The draft is restored automatically rather than offered — a prompt's failure mode is
     /// tapping past it, which loses the note it was trying to save. So this says what has
     /// already happened, and the way out of it is a button rather than a decision.
     private func restoredDraftNotice(savedAt: Date) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 12) {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
             Label("Restored an unsaved draft from \(Self.noticeTime(savedAt)).", systemImage: "clock.arrow.circlepath")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .layoutPriority(1)
 
             Spacer(minLength: 0)
 
@@ -235,6 +363,10 @@ struct NoteEditorView: View {
             .foregroundStyle(.secondary)
             .accessibilityLabel("Dismiss")
         }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.thinMaterial)
     }
 
     /// A draft from earlier today is a time; one from before that needs its date, because
@@ -400,8 +532,8 @@ private struct SuggestedSessionDates: View {
                         .tint(isChosen(session) ? .accentColor : .secondary)
                     }
                 }
-                // The scroll view is edge-to-edge inside a Form row, so the first and last
-                // chips need their own inset or they sit under the row's rounded corner.
+                // The scroll view runs edge to edge inside the details card, so the first
+                // and last chips need their own inset or they sit under its rounded corner.
                 .padding(.horizontal, 1)
             }
         }
