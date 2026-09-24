@@ -88,7 +88,7 @@ interface, not its foundations.
 Wait for Xcode to finish installing. Then, in Terminal:
 
 ```bash
-xcodegen generate
+tools/generate-project.sh
 ```
 ```bash
 open NotesVault.xcodeproj
@@ -97,7 +97,7 @@ open NotesVault.xcodeproj
 Xcode opens. The first launch asks to install additional components — say yes and let it.
 
 > **A thing to know.** `NotesVault.xcodeproj` is generated from `project.yml`, and is not
-> stored in the repository. If you ever re-run `xcodegen generate`, it is rebuilt from
+> stored in the repository. If you ever re-run `tools/generate-project.sh`, it is rebuilt from
 > scratch and any settings you changed by hand in Xcode — including the signing team in the
 > next step — are wiped. Just set them again.
 

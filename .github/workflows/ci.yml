@@ -24,7 +24,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .build
-          key: spm-${{ runner.os }}-${{ hashFiles('Package.swift') }}
+          key: spm-${{ runner.os }}-${{ hashFiles('Package.swift', 'Package.resolved') }}
           restore-keys: spm-${{ runner.os }}-
 
       # The core tests are fast and stub the cryptography. The crypto tests run real scrypt
@@ -51,9 +51,11 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
+      # Through the script rather than `xcodegen generate`, so the app is built against
+      # the same pinned dependency versions the tests ran on.
       - name: Generate the project
         run: |
-          xcodegen generate
+          tools/generate-project.sh
           xcodegen --version
 
       # Code signing is off: this proves the app compiles and links, which is the question

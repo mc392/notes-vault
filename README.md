@@ -52,7 +52,7 @@ is how that gets found out.
 
 ```bash
 brew install xcodegen
-xcodegen generate
+tools/generate-project.sh   # xcodegen, plus the pinned dependency versions
 open NotesVault.xcodeproj
 ```
 
