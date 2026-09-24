@@ -60,7 +60,7 @@ one without Xcode 26, that check is what will say so, and it prints the versions
 **From your own Mac instead** (and the fallback if the workflow misbehaves):
 
 ```bash
-xcodegen generate && open NotesVault.xcodeproj
+tools/generate-project.sh && open NotesVault.xcodeproj
 ```
 
 then *Any iOS Device* → Product → Archive → Distribute App → TestFlight & App Store.
@@ -69,7 +69,7 @@ then *Any iOS Device* → Product → Archive → Distribute App → TestFlight 
 The sentence above about CI taking the number from the tag is true of CI only; nothing
 increments it for a hand-made archive, and Apple rejects a build number it has already
 accepted for this marketing version — at upload, after the archive, with a message about
-the version rather than about the setting. Bump, commit, `xcodegen generate`, then archive.
+the version rather than about the setting. Bump, commit, `tools/generate-project.sh`, then archive.
 
 ## One-time setup
 

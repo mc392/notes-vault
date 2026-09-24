@@ -62,8 +62,9 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
+      # Pins the dependency versions as well — see the script.
       - name: Generate the project
-        run: xcodegen generate
+        run: tools/generate-project.sh
 
       - name: Write the App Store Connect API key
         env:

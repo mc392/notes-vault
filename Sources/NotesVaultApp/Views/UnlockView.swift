@@ -139,8 +139,6 @@ struct RecoverAccessView: View {
         do {
             _ = try RecoveryKey(typed: typedKey)
             return nil
-        } catch let error as VaultError {
-            return error.errorDescription
         } catch {
             return error.localizedDescription
         }

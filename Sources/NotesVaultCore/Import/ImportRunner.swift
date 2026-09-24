@@ -28,6 +28,17 @@ public struct ImportReport: Sendable {
     public let issues: [VaultIssue]
     /// Clients that did not exist in this vault before this import.
     public let newClients: [ClientCode]
+    /// Notes the plan held that were never attempted, because the run was stopped — the
+    /// vault locked part-way through. Everything before them was written and verified as
+    /// usual; none of these were written at all.
+    public let notAttempted: Int
+
+    public init(outcomes: [ImportOutcome], issues: [VaultIssue], newClients: [ClientCode], notAttempted: Int = 0) {
+        self.outcomes = outcomes
+        self.issues = issues
+        self.newClients = newClients
+        self.notAttempted = notAttempted
+    }
 
     public var written: Int { outcomes.filter(\.succeeded).count }
     public var failed: Int { outcomes.filter { !$0.succeeded }.count }
@@ -61,7 +72,8 @@ public enum ImportRunner {
         store: VaultStore,
         existingClients: Set<ClientCode> = [],
         now: Date = Date(),
-        onProgress: ((Progress) -> Void)? = nil
+        onProgress: ((Progress) -> Void)? = nil,
+        shouldContinue: () -> Bool = { true }
     ) -> ImportReport {
         var outcomes: [ImportOutcome] = []
         var issues: [VaultIssue] = []
@@ -84,6 +96,18 @@ public enum ImportRunner {
         }
 
         for (offset, entry) in notes.enumerated() {
+            // Asked before each note, never part-way through one, so a stop leaves every
+            // note either fully written and verified or not written at all. Locking the
+            // vault drops its key; an import that carried on holding it would make a liar
+            // of the lock.
+            guard shouldContinue() else {
+                let remaining = notes.count - offset
+                issues.append(VaultIssue(
+                    location: "Import",
+                    message: "The vault was locked part-way through, so the last \(remaining) note\(remaining == 1 ? " was" : "s were") not imported. Nothing of theirs was written. Importing the same files again brings them in — the review flags the notes that are already in the vault, so those can be skipped."
+                ))
+                return ImportReport(outcomes: outcomes, issues: issues, newClients: newClients, notAttempted: remaining)
+            }
             let (code, item, record) = entry
 
             // A client the vault has never seen gets the same metadata event that "Add

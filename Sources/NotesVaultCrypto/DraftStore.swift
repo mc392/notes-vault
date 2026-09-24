@@ -28,18 +28,7 @@ public struct DraftStore: Sendable {
     private let keyForVault: @Sendable (String) -> SymmetricKey?
 
     public init?() {
-        guard let support = try? FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        ) else { return nil }
-
-        let directory = support
-            .appendingPathComponent("NotesVault", isDirectory: true)
-            .appendingPathComponent("Drafts", isDirectory: true)
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-
+        guard let directory = SealedLocalFile.directory("Drafts") else { return nil }
         self.init(directory: directory, key: { KeychainStore.indexKey(vaultID: $0) })
     }
 
@@ -61,36 +50,19 @@ public struct DraftStore: Sendable {
             return false
         }
 
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        guard let plaintext = try? encoder.encode(draft),
-              let sealed = try? AES.GCM.seal(plaintext, using: key).combined else { return false }
-
-        do {
-            #if os(iOS)
-            try sealed.write(to: fileURL(slot), options: [.atomic, .completeFileProtection])
-            #else
-            try sealed.write(to: fileURL(slot), options: [.atomic])
-            #endif
-            // The in-memory copy was a stand-in for this file; now that it exists, the
-            // file is the one source.
-            HeldDrafts.remove(slot)
-            return true
-        } catch {
-            return false
-        }
+        guard SealedLocalFile.write(draft, to: fileURL(slot), key: key) else { return false }
+        // The in-memory copy was a stand-in for this file; now that it exists, the file is
+        // the one source.
+        HeldDrafts.remove(slot)
+        return true
     }
 
     public func load(vaultID: String, client: ClientCode, correcting: NoteID?) -> NoteDraft? {
         let slot = Self.slot(vaultID: vaultID, client: client, correcting: correcting)
 
         if let key = keyForVault(vaultID),
-           let sealed = try? Data(contentsOf: fileURL(slot)),
-           let box = try? AES.GCM.SealedBox(combined: sealed),
-           let plaintext = try? AES.GCM.open(box, using: key) {
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            if let draft = try? decoder.decode(NoteDraft.self, from: plaintext) { return draft }
+           let draft = SealedLocalFile.read(NoteDraft.self, from: fileURL(slot), key: key) {
+            return draft
         }
         return HeldDrafts.get(slot)
     }

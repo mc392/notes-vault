@@ -12,17 +12,16 @@ import NotesVaultCore
 /// It names a file. It does not hold its contents, and the file it names holds no clinical
 /// content, so `UserDefaults` is the right place for it.
 public enum RosterBookmark {
-    private static let key = "roster.bookmark"
-    private static let displayNameKey = "roster.displayName"
+    private static let bookmark = SecurityScopedBookmark(
+        key: "roster.bookmark",
+        displayNameKey: "roster.displayName",
+        failure: VaultError.scheduleFileUnavailable
+    )
     private static let lastSyncKey = "roster.lastSync"
 
-    public static var storedDisplayName: String? {
-        UserDefaults.standard.string(forKey: displayNameKey)
-    }
+    public static var storedDisplayName: String? { bookmark.storedDisplayName }
 
-    public static var exists: Bool {
-        UserDefaults.standard.data(forKey: key) != nil
-    }
+    public static var exists: Bool { bookmark.exists }
 
     /// When the last sync ran on this device. Shown on the settings screen, because "did I
     /// already do this?" is the first question anybody asks of a sync button.
@@ -42,77 +41,41 @@ public enum RosterBookmark {
 
     /// Remembers the file the picker returned.
     ///
-    /// **The security scope has to be held while the bookmark is made.** A URL from the
-    /// document picker is unusable outside a balanced
-    /// `startAccessingSecurityScopedResource()` pair, and `bookmarkData` is a use like any
-    /// other: called outside one it fails with "the file couldn't be opened because it
-    /// doesn't exist", which is the sandbox refusing rather than the file being missing.
-    /// The vault folder gets this for free — `FileSystemVaultStore` is already holding its
-    /// folder open when `VaultBookmark.store` runs — and a file picked for a single read
-    /// has nothing holding it, which is why this is the path that broke.
+    /// A file picked for a single read has nothing else holding its security scope, which
+    /// is why `SecurityScopedBookmark` holds it while the bookmark is made — this is the
+    /// path that broke before it did.
     ///
     /// `downloadTimeout` is how long to wait for iCloud to hand over a file that is still a
     /// placeholder; a placeholder cannot be bookmarked either. Pass `0` to ask for it and
     /// carry on — anything running on the main thread should, because this blocks.
     public static func store(_ url: URL, downloadTimeout: TimeInterval = 0) throws {
-        let accessed = url.startAccessingSecurityScopedResource()
-        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
-
-        #if os(macOS)
-        let options: URL.BookmarkCreationOptions = [.withSecurityScope]
-        #else
-        let options: URL.BookmarkCreationOptions = []
-        #endif
-
-        // Best effort: a file that is not in iCloud at all, or is already here, costs
-        // nothing. A failure to fetch is reported by the bookmark attempt below, in terms
-        // of the file rather than of the download.
-        try? materialise(url, timeout: downloadTimeout)
-
         let data: Data
         do {
-            data = try url.bookmarkData(options: options, includingResourceValuesForKeys: nil, relativeTo: nil)
+            // Best effort: a file that is not in iCloud at all, or is already here, costs
+            // nothing. A failure to fetch is reported by the bookmark attempt, in terms of
+            // the file rather than of the download.
+            data = try bookmark.bookmarkData(for: url) {
+                _ = ICloudFile.materialise(url, timeout: downloadTimeout, acceptingLocalCopy: false)
+            }
         } catch {
-            if !isDownloaded(url) {
+            if !ICloudFile.isDownloaded(url, acceptingLocalCopy: false) {
                 throw VaultError.scheduleFileUnavailable(
                     "\(url.lastPathComponent) is in iCloud but has not been downloaded to this device yet. Open it once in the Files app, then choose it again here."
                 )
             }
             throw VaultError.scheduleFileUnavailable("that file could not be remembered: \(error.localizedDescription)")
         }
-
-        UserDefaults.standard.set(data, forKey: key)
-        UserDefaults.standard.set(url.lastPathComponent, forKey: displayNameKey)
+        bookmark.remember(data, name: url.lastPathComponent)
     }
 
     /// Resolves the bookmark, refreshing it if it has gone stale. Returns nil when no file
     /// has been chosen yet.
     public static func resolve() throws -> URL? {
-        guard let data = UserDefaults.standard.data(forKey: key) else { return nil }
-
-        #if os(macOS)
-        let options: URL.BookmarkResolutionOptions = [.withSecurityScope]
-        #else
-        let options: URL.BookmarkResolutionOptions = []
-        #endif
-
-        var isStale = false
-        do {
-            let url = try URL(resolvingBookmarkData: data, options: options, relativeTo: nil, bookmarkDataIsStale: &isStale)
-            // A stale bookmark still resolves; re-saving it is what stops it going stale
-            // for good. It is `try?` because a failure here loses nothing — the URL in
-            // hand is still good for this sync — and this runs on the main thread, hence
-            // no download wait.
-            if isStale { try? store(url) }
-            return url
-        } catch {
-            throw VaultError.scheduleFileUnavailable("that file could not be reopened — choose it again (\(error.localizedDescription))")
-        }
+        try bookmark.resolve { "that file could not be reopened — choose it again (\($0))" }
     }
 
     public static func clear() {
-        UserDefaults.standard.removeObject(forKey: key)
-        UserDefaults.standard.removeObject(forKey: displayNameKey)
+        bookmark.clear()
         UserDefaults.standard.removeObject(forKey: lastSyncKey)
     }
 
@@ -124,55 +87,21 @@ public enum RosterBookmark {
     /// download comes first and the "is it there?" check second: a placeholder is not at
     /// the path the user picked, it is beside it as `.name.icloud`, and testing the path
     /// first would call every undownloaded file gone.
+    ///
+    /// Only the latest version will do: GroundWork rewrites this file, and a stale local
+    /// copy would sync last week's schedules.
     public static func read(_ url: URL, downloadTimeout: TimeInterval = 20) throws -> Data {
         let accessed = url.startAccessingSecurityScopedResource()
         defer { if accessed { url.stopAccessingSecurityScopedResource() } }
 
-        try materialise(url, timeout: downloadTimeout)
+        let outcome = ICloudFile.materialise(url, timeout: downloadTimeout, acceptingLocalCopy: false, pollInterval: 0.25)
+        if outcome == .timedOut && downloadTimeout > 0 {
+            throw VaultError.scheduleFileUnavailable("that file is still downloading from iCloud. Wait for it to finish and sync again.")
+        }
 
         guard FileManager.default.fileExists(atPath: url.path) else {
             throw VaultError.scheduleFileUnavailable("that file is no longer there. Export it again from GroundWork, or choose it again here.")
         }
         return try Data(contentsOf: url)
-    }
-
-    /// Where iCloud parks a file it has not downloaded: `.name.icloud`, beside the real one.
-    private static func placeholderURL(for target: URL) -> URL? {
-        let placeholder = target
-            .deletingLastPathComponent()
-            .appendingPathComponent(".\(target.lastPathComponent).icloud")
-        return FileManager.default.fileExists(atPath: placeholder.path) ? placeholder : nil
-    }
-
-    /// Whether the bytes are actually on this device — an ordinary local file, or a
-    /// ubiquitous one iCloud has finished fetching.
-    private static func isDownloaded(_ url: URL) -> Bool {
-        let values = try? url.resourceValues(forKeys: [.isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey])
-        if values?.isUbiquitousItem == true {
-            return values?.ubiquitousItemDownloadingStatus == .current
-        }
-        return FileManager.default.fileExists(atPath: url.path) && placeholderURL(for: url) == nil
-    }
-
-    /// Asks iCloud for a file that is only a placeholder, and — when given a timeout —
-    /// waits for it. Call inside the security scope: the request is a use of the file too.
-    private static func materialise(_ url: URL, timeout: TimeInterval) throws {
-        guard !isDownloaded(url) else { return }
-
-        do {
-            try FileManager.default.startDownloadingUbiquitousItem(at: url)
-        } catch {
-            // Not a ubiquitous item at all — a plain local file, or one that genuinely is
-            // not there. Nothing to wait for either way; the caller reports what it finds.
-            return
-        }
-
-        guard timeout > 0 else { return }
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if isDownloaded(url) { return }
-            Thread.sleep(forTimeInterval: 0.25)
-        }
-        throw VaultError.scheduleFileUnavailable("that file is still downloading from iCloud. Wait for it to finish and sync again.")
     }
 }

@@ -52,7 +52,7 @@ is how that gets found out.
 
 ```bash
 brew install xcodegen
-xcodegen generate
+tools/generate-project.sh   # xcodegen, plus the pinned dependency versions
 open NotesVault.xcodeproj
 ```
 
@@ -278,6 +278,8 @@ NotesVaultCore        pure logic, no dependencies
   VaultStore          clients, notes, corrections, index rebuild, export
   VaultIndex          the cache's shape and how it is derived
   RecoveryKey         160-bit key, Crockford Base32, CRC-16 checked
+  LockPolicy          when coming back needs a check, and when it needs an unlock
+  PresenceTracker     the shield and check bookkeeping, tested without a device
   Import/             reading other people's files: dates, CSV, RTF, HTML, zip,
                       .docx, .xlsx, Evernote, splitting, grouping, the name scan,
                       the plan the counsellor confirms, and the writer
@@ -285,18 +287,35 @@ NotesVaultCore        pure logic, no dependencies
 NotesVaultCrypto      the platform edge
   CryptomatorEngine   VaultCryptoEngine backed by the audited library
   VaultBootstrap      masterkey files, the signed vault config, recovery
-  FileSystemVaultStore  security scope, file coordination, iCloud placeholders
+  FileSystemVaultStore  security scope, file coordination
+  ICloudFile          asking iCloud for a placeholder and waiting for it
   KeychainStore       index key + optional biometric passphrase
+  SealedLocalFile     the one way anything is written outside the vault
   IndexStore          the encrypted local cache
+  DraftStore          encrypted autosave of unsaved notes
   VaultBookmark       remembering which folder, across launches
+  RosterBookmark      remembering GroundWork's schedule file
+  PlaintextScratch    the scratch file the library needs, and the launch sweep
 
 NotesVaultApp         SwiftUI, one AppModel, everything serialised through it
   SplashView          the launch screen, and the shield over a backgrounded app
-  AppModel            the lock policy lives here: `confirmIdentity`, `becameActive`
+  AppModel            state, lifecycle, and `run`, which ties work to its session
+  AppModel+Access     unlocking and the checks: `confirmIdentity`, `becameActive`
+  AppModel+Notes      the index, notes, drafts and clients
+  AppModel+Sync       GroundWork's schedules
+  AppModel+Transfer   import and export
+  AppModel+Settings   the device settings
+  Views/Import/       the import screens, one file per step
 ```
 
-`LockPolicy` (Core) and `DeviceCheck` (Crypto) are the two new pieces of that picture:
-where the app asks who you are, and how it asks. See "When the app asks who you are".
+`LockPolicy` and `PresenceTracker` (Core) and `DeviceCheck` (Crypto) are the pieces of
+that picture that decide where the app asks who you are, and how it asks. See "When the app
+asks who you are".
+
+**Locking stops work, not only screens.** Every piece of vault work records the session it
+was started in. Locking ends that session: a rebuild, import, export or schedule sync still
+running stops at the next note or client, and a result that arrives after the lock is
+dropped rather than put back into a locked app.
 
 ### What the folder actually looks like
 
@@ -363,6 +382,16 @@ A device with no biometry and no passcode is the one place this bends: it cannot
 so in-app checks pass (the passphrase was typed to get in, and demanding it before every
 note ends with it taped to the back of the phone) while *reopening* still falls back to the
 passphrase. Settings says so in as many words.
+
+The decisions themselves — when the shield goes up and comes down, what coming back costs,
+how long a check stands — are made by `PresenceTracker` and covered by
+`PresenceTrackerTests`, including the stuck-launch-screen race. Only asking the device is
+left in `AppModel`.
+
+**Reissuing a recovery key retires the old one only once the new one is confirmed.** The
+new key is made and shown first, and written to the vault when it has been typed back.
+Closing the sheet, or the app locking, before then throws the new key away and leaves the
+old one working.
 
 The one path the simulator cannot exercise is a genuine `LAError.authenticationFailed` —
 biometry there falls through to the passcode sheet — so the "That check didn't pass" screen
@@ -567,7 +596,8 @@ encryption only as `encryptContent(from: URL, to: URL)`; the stream overloads th
 keep a note in memory are `internal`. So each note is written to a scratch file for the
 length of one call. `PlaintextScratch` handles it deliberately — unique directory, complete
 file protection on iOS so the key is evicted when the device locks, contents overwritten
-before unlinking — but the honest fix is upstream: a small PR making those overloads public
+before unlinking, and a sweep at every launch for anything a run killed mid-encryption left
+behind — but the honest fix is upstream: a small PR making those overloads public
 deletes that file entirely. Worth doing before launch.
 
 **The Apple Notes route now says what actually works, and the rest of it is still
