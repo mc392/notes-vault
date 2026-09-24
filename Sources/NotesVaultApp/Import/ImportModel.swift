@@ -54,6 +54,10 @@ final class ImportModel: ObservableObject {
 
     /// The picked files, kept only while this sheet is open.
     private var files: [ImportFile] = []
+    /// What each file read as, in the same order as `files`, under the current options.
+    /// Kept so that matching up a table's columns maps what was already read rather than
+    /// parsing every Word document and spreadsheet a second time.
+    private var readResults: [ImportFileResult] = []
     private var existingClients: [ClientCode] = []
     private var existingNotes: [NoteIndexEntry] = []
     /// The fields this device has, so metadata found in the notes can be matched against
@@ -102,43 +106,30 @@ final class ImportModel: ObservableObject {
         let alreadyMapped = stage == .review
         let existingMappings = Dictionary(tables.map { ($0.file, $0.mapping) }, uniquingKeysWith: { first, _ in first })
 
-        let outcome = await Task.detached(priority: .userInitiated) { () -> (results: [ImportFileResult], tables: [PendingTable]) in
-            // `existingMappings` is a plain dictionary of value types, captured by copy.
-            var results: [ImportFileResult] = []
-            var tables: [PendingTable] = []
-            for file in files {
-                let result = ImportReader.read(file, options: options) { file in
-                    try PDFTextExtractor.text(from: file.data)
-                }
-                if let table = result.table {
-                    tables.append(PendingTable(
-                        file: file.name,
-                        modified: file.modified,
-                        table: table,
-                        mapping: existingMappings[file.name] ?? ColumnMapping.suggest(for: table)
-                    ))
-                }
-                results.append(result)
-            }
-            return (results, tables)
+        let results = await Task.detached(priority: .userInitiated) {
+            Self.read(files, options: options)
         }.value
+        readResults = results
 
-        summaries = outcome.results.map { result in
-            FileSummary(
-                name: result.file,
-                format: result.format,
-                itemCount: result.needsMapping ? 0 : result.items.count,
-                problem: result.issues.first?.message
+        // `existingMappings` is a plain dictionary of value types, captured by copy.
+        tables = zip(files, results).compactMap { file, result in
+            guard let table = result.table else { return nil }
+            return PendingTable(
+                file: file.name,
+                modified: file.modified,
+                table: table,
+                mapping: existingMappings[file.name] ?? ColumnMapping.suggest(for: table)
             )
         }
-        tables = outcome.tables
 
         if tables.isEmpty {
-            buildPlan(from: outcome.results, extraIssues: extraIssues)
+            summaries = results.map(Self.summary)
+            buildPlan(from: results, extraIssues: extraIssues)
             stage = .review
         } else if alreadyMapped {
             await applyMappings()
         } else {
+            summaries = results.map(Self.summary)
             // Hold the plan back until the columns are settled: a table mapped wrongly puts
             // one client's session in another client's record.
             plan = ImportPlan(groups: [], issues: extraIssues, options: options)
@@ -149,43 +140,67 @@ final class ImportModel: ObservableObject {
     /// The counsellor has matched up every table's columns.
     func applyMappings() async {
         let files = self.files
+        let read = self.readResults
         let tables = self.tables
         let options = self.options
 
-        let results = await Task.detached(priority: .userInitiated) { () -> [ImportFileResult] in
-            var results: [ImportFileResult] = []
-            for file in files {
-                let read = ImportReader.read(file, options: options) { file in
-                    try PDFTextExtractor.text(from: file.data)
-                }
-                guard let table = read.table else {
-                    results.append(read)
-                    continue
-                }
-                let pending = tables.first { $0.file == file.name }
-                let mapped = TabularImport.items(
-                    from: table,
-                    mapping: pending?.mapping ?? ColumnMapping.suggest(for: table),
-                    container: file.name,
-                    options: options,
-                    modified: file.modified
-                )
-                results.append(ImportFileResult(
-                    file: file.name,
-                    format: read.format,
-                    items: mapped.items,
-                    table: nil,
-                    issues: read.issues + mapped.issues
-                ))
-            }
-            return results
+        let results = await Task.detached(priority: .userInitiated) {
+            Self.mapping(read, files: files, tables: tables, options: options)
         }.value
 
-        summaries = results.map {
-            FileSummary(name: $0.file, format: $0.format, itemCount: $0.items.count, problem: $0.issues.first?.message)
-        }
+        summaries = results.map(Self.summary)
         buildPlan(from: results, extraIssues: plan.issues)
         stage = .review
+    }
+
+    // MARK: - Reading, off the main actor
+
+    /// Every file, read once under `options`.
+    nonisolated private static func read(_ files: [ImportFile], options: ImportOptions) -> [ImportFileResult] {
+        files.map { file in
+            ImportReader.read(file, options: options) { file in
+                try PDFTextExtractor.text(from: file.data)
+            }
+        }
+    }
+
+    /// Turns each table that has been read into notes, using the columns the counsellor
+    /// matched up. Everything that is not a table passes through as it was read.
+    nonisolated private static func mapping(
+        _ results: [ImportFileResult],
+        files: [ImportFile],
+        tables: [PendingTable],
+        options: ImportOptions
+    ) -> [ImportFileResult] {
+        zip(files, results).map { file, read in
+            guard let table = read.table else { return read }
+            let pending = tables.first { $0.file == file.name }
+            let mapped = TabularImport.items(
+                from: table,
+                mapping: pending?.mapping ?? ColumnMapping.suggest(for: table),
+                container: file.name,
+                options: options,
+                modified: file.modified
+            )
+            return ImportFileResult(
+                file: file.name,
+                format: read.format,
+                items: mapped.items,
+                table: nil,
+                issues: read.issues + mapped.issues
+            )
+        }
+    }
+
+    /// One file's line in the "here is what I found" list. A table not yet mapped has no
+    /// notes to count.
+    nonisolated private static func summary(_ result: ImportFileResult) -> FileSummary {
+        FileSummary(
+            name: result.file,
+            format: result.format,
+            itemCount: result.needsMapping ? 0 : result.items.count,
+            problem: result.issues.first?.message
+        )
     }
 
     private func buildPlan(from results: [ImportFileResult], extraIssues: [VaultIssue]) {
@@ -294,7 +309,7 @@ final class ImportModel: ObservableObject {
             noteFields = model.noteFields
             setFieldDecision(.store(fieldKey: field.key), for: candidate)
         } catch {
-            errorMessage = (error as? VaultError)?.errorDescription ?? error.localizedDescription
+            errorMessage = error.localizedDescription
         }
     }
 
@@ -340,10 +355,12 @@ final class ImportModel: ObservableObject {
         // The files are the counsellor's, and they are still theirs. All this drops is our
         // copy of them out of memory.
         files = []
+        readResults = []
     }
 
     func reset() {
         files = []
+        readResults = []
         summaries = []
         tables = []
         plan = ImportPlan(groups: [], issues: [], options: options)

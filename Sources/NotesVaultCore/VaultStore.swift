@@ -344,7 +344,14 @@ public final class VaultStore {
     /// a vault that two devices have both been writing to has no ordering guarantee worth
     /// trusting, and a full walk of a few hundred small files is fast enough that being
     /// clever here would only buy the chance of a stale index.
-    public func rebuildIndex(progress: ((Int, Int) -> Void)? = nil) throws -> IndexBuildResult {
+    ///
+    /// `shouldContinue` is asked before each client. Answering no throws `vaultNotOpen`: the
+    /// vault was locked while this ran, and decrypting the rest of it for nobody would be
+    /// holding the key past the lock.
+    public func rebuildIndex(
+        progress: ((Int, Int) -> Void)? = nil,
+        shouldContinue: () -> Bool = { true }
+    ) throws -> IndexBuildResult {
         try prepareStructure()
 
         let listing = try listClientCodes()
@@ -353,6 +360,7 @@ public final class VaultStore {
         var events: [ClientCode: ClientMetadataEvent] = [:]
 
         for (offset, code) in listing.codes.enumerated() {
+            guard shouldContinue() else { throw VaultError.vaultNotOpen }
             progress?(offset, listing.codes.count)
             guard let folderID = try directoryID(for: code) else { continue }
 
@@ -397,7 +405,14 @@ public final class VaultStore {
     /// Principle 05: the counsellor can always get everything out, in a format that needs
     /// nothing from us to read. The caller decides where it goes, so the same walk serves
     /// "export to a folder" and "export to a zip" without this layer knowing about either.
-    public func exportPlaintext(_ emit: ([String], Data) throws -> Void) throws -> [VaultIssue] {
+    ///
+    /// `shouldContinue` is asked before each file; answering no stops the export where it
+    /// is and throws `vaultNotOpen`. What was already written stays written — it is the
+    /// counsellor's folder — but nothing more is decrypted once the vault is locked.
+    public func exportPlaintext(
+        shouldContinue: () -> Bool = { true },
+        _ emit: ([String], Data) throws -> Void
+    ) throws -> [VaultIssue] {
         let listing = try listClientCodes()
         var issues = listing.issues
 
@@ -407,6 +422,7 @@ public final class VaultStore {
             issues.append(contentsOf: contents.issues)
 
             for filename in contents.notes + contents.events {
+                guard shouldContinue() else { throw VaultError.vaultNotOpen }
                 do {
                     let path = try layout.filePath(named: filename, in: folderID)
                     let plaintext = try layout.engine.decryptContent(try files.read(at: path))

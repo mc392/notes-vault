@@ -367,19 +367,41 @@ struct EmptyStateView: View {
     }
 }
 
+/// Dates as the app writes them everywhere: "14 Jun 2026", "14 Jun 2026, 09:30".
+///
+/// The formatters are made once and kept. A `DateFormatter` is expensive to create, and
+/// these are called for every row of every list each time it redraws — creating one per
+/// call was most of the cost of scrolling a long client list. Kept per format and time
+/// zone, because a note's session is shown in the zone it was written in.
 enum Formatted {
-    static func date(_ date: Date, timeZone: TimeZone = .current) -> String {
+    private static var formatters: [String: DateFormatter] = [:]
+    /// Views call these from the main thread, but nothing makes that a rule, and a
+    /// dictionary written from two threads at once is a crash. A formatter, once made, is
+    /// safe to use from any thread.
+    private static let lock = NSLock()
+
+    private static func formatter(_ format: String, _ timeZone: TimeZone) -> DateFormatter {
+        let key = "\(format)|\(timeZone.identifier)"
+        lock.lock()
+        defer { lock.unlock() }
+        if let existing = formatters[key] { return existing }
         let formatter = DateFormatter()
         formatter.timeZone = timeZone
-        formatter.dateFormat = "d MMM yyyy"
-        return formatter.string(from: date)
+        formatter.dateFormat = format
+        formatters[key] = formatter
+        return formatter
+    }
+
+    static func date(_ date: Date, timeZone: TimeZone = .current) -> String {
+        formatter("d MMM yyyy", timeZone).string(from: date)
     }
 
     static func dateTime(_ date: Date, timeZone: TimeZone = .current) -> String {
-        let formatter = DateFormatter()
-        formatter.timeZone = timeZone
-        formatter.dateFormat = "d MMM yyyy, HH:mm"
-        return formatter.string(from: date)
+        formatter("d MMM yyyy, HH:mm", timeZone).string(from: date)
+    }
+
+    static func time(_ date: Date, timeZone: TimeZone = .current) -> String {
+        formatter("HH:mm", timeZone).string(from: date)
     }
 
     /// A predicted session: with its time when that time means something, and without when

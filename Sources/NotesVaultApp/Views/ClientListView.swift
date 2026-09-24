@@ -14,17 +14,13 @@ struct ClientListView: View {
     /// caseload after a few years and none of them are today's work.
     @State private var expanded: Set<ClientStatus> = []
 
-    private var clients: [ClientSummary] {
-        model.index.searchClients(search)
-    }
-
     private var isSearching: Bool {
         !search.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
     /// The groups with anybody in them, in status order. A status nobody has is not shown
     /// as an empty heading.
-    private var groups: [(status: ClientStatus, clients: [ClientSummary])] {
+    private func groups(of clients: [ClientSummary]) -> [(status: ClientStatus, clients: [ClientSummary])] {
         ClientStatus.allCases.compactMap { status in
             let matching = clients.filter { $0.status == status }
             return matching.isEmpty ? nil : (status, matching)
@@ -39,6 +35,10 @@ struct ClientListView: View {
     }
 
     var body: some View {
+        // Searched once per redraw. As computed properties, the search ran once for the
+        // empty check and again inside every group.
+        let clients = model.index.searchClients(search)
+
         List {
             if !model.issues.isEmpty {
                 Section {
@@ -69,11 +69,10 @@ struct ClientListView: View {
                     }
                 }
             } else {
-                // Worked out once for the whole list. Asked per row, each answer re-reads
-                // every note in the vault to find one client's, which on a full vault is the
-                // list itself becoming slow to scroll.
-                let outstanding = model.outstandingSessions()
-                ForEach(groups, id: \.status) { group in
+                // Worked out once per index by the model, not per row or per redraw. Asked
+                // per row, each answer re-read every note in the vault to find one client's.
+                let outstanding = model.outstanding
+                ForEach(groups(of: clients), id: \.status) { group in
                     Section {
                         if isExpanded(group.status) {
                             ForEach(group.clients) { client in
@@ -163,7 +162,7 @@ struct ClientListView: View {
         } catch {
             // Reported through the app's one error path rather than by re-presenting the
             // alert from inside its own dismissal, which does not reliably reappear.
-            model.errorMessage = (error as? VaultError)?.errorDescription ?? error.localizedDescription
+            model.errorMessage = error.localizedDescription
         }
     }
 }

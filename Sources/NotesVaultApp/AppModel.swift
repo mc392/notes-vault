@@ -10,6 +10,19 @@ import NotesVaultCrypto
 /// would be the one way to lose a note. Serialising here means the app cannot race itself,
 /// and the only remaining concurrency is between *devices*, which the file format already
 /// handles by never overwriting.
+///
+/// Split across files by area, because at a thousand lines nobody could hold it in their
+/// head. This file is the state, the lifecycle and the plumbing; the rest are extensions:
+///
+/// - `AppModel+Access`: unlocking, the checks, the passphrase and the recovery key;
+/// - `AppModel+Notes`: the index, notes, drafts, clients and predicted sessions;
+/// - `AppModel+Sync`: GroundWork's schedule file;
+/// - `AppModel+Transfer`: import, export and destruction;
+/// - `AppModel+Settings`: the device settings and where they are kept.
+///
+/// Swift only lets an extension in another file see what is at least `internal`, so the
+/// stored state below is `internal` rather than `private`. The app is one module and
+/// nothing outside it can see any of this either way.
 @MainActor
 public final class AppModel: ObservableObject {
     public enum Phase: Equatable {
@@ -49,41 +62,39 @@ public final class AppModel: ObservableObject {
         }
     }
 
-    @Published public private(set) var phase: Phase = .starting
-    @Published public private(set) var lockReason: LockReason = .manual
-    /// Whether the splash is covering the app.
-    ///
-    /// Raised the moment the app leaves the foreground — so the card in the app switcher is
-    /// the launch screen and not a client's notes — and kept up while a resume check runs,
-    /// so nothing is on screen until the check has passed.
-    @Published public private(set) var isShielded = false
-    @Published public private(set) var index = VaultIndex.empty
-    @Published public private(set) var issues: [VaultIssue] = []
-    @Published public private(set) var folderName: String?
-    @Published public private(set) var busyMessage: String?
+    @Published public internal(set) var phase: Phase = .starting
+    @Published public internal(set) var lockReason: LockReason = .manual
+    /// When the last check passed, when the app went away, whether a check is on screen,
+    /// and whether the shield is up. The rules live in `PresenceTracker`, where they are
+    /// tested; `AppModel+Access` asks the device and does what it says.
+    @Published var presence = PresenceTracker()
+    @Published public internal(set) var index = VaultIndex.empty {
+        didSet { recomputeDerived() }
+    }
+    @Published public internal(set) var issues: [VaultIssue] = []
+    @Published public internal(set) var folderName: String?
+    @Published public internal(set) var busyMessage: String?
     @Published public var errorMessage: String?
-    @Published public private(set) var pendingRecoveryKey: RecoveryKey?
+    @Published public internal(set) var pendingRecoveryKey: RecoveryKey?
     @Published public var retentionPolicy = RetentionPolicy.bacpDefault {
-        didSet { persistRetentionPolicy() }
+        didSet {
+            Self.saveSetting(retentionPolicy, key: Self.retentionKey)
+            recomputeRetention()
+        }
     }
     /// Which extra fields the note screen offers. A device setting, like the retention
     /// policy — turning a field on never writes anything to the vault.
     @Published public var noteFields = NoteFieldSettings.default {
-        didSet { persistNoteFields() }
+        didSet { Self.saveSetting(noteFields, key: Self.noteFieldsKey) }
     }
     /// The templates the note screen offers, built-in and the counsellor's own. A device
     /// setting for the same reason as the fields: writing one never touches the vault.
     @Published public var noteTemplates = NoteTemplateSettings.default {
-        didSet { persistNoteTemplates() }
+        didSet { Self.saveSetting(noteTemplates, key: Self.noteTemplatesKey) }
     }
     /// When the app asks for a check. Changed through `setReopenGrace`, which asks for one
     /// first — a lock setting anybody can loosen is not a lock setting.
-    @Published public private(set) var lockPolicy = LockPolicy.default
-
-    /// The name this device writes into every note it creates.
-    public var deviceDisplayName: String { DeviceIdentity.current }
-
-    public var biometricsAvailable: Bool { KeychainStore.biometricsAvailable }
+    @Published public internal(set) var lockPolicy = LockPolicy.default
 
     /// Whether this device holds the passphrase behind Face ID for the open vault.
     ///
@@ -92,60 +103,69 @@ public final class AppModel: ObservableObject {
     /// so a computed property here is a keychain query on every redraw, against an item the
     /// keychain guards with a check. One stale reading of this is a wrong caption; one
     /// keychain query too many is a Face ID prompt nobody asked for, in a loop as long as
-    /// the screen keeps redrawing. It is refreshed at the four moments it can change.
-    @Published public private(set) var biometricsEnrolled = false
+    /// the screen keeps redrawing. It is refreshed at the moments it can change.
+    @Published public internal(set) var biometricsEnrolled = false
 
-    private func refreshBiometricsEnrolled() {
-        guard let vaultID else {
-            biometricsEnrolled = false
-            return
-        }
-        biometricsEnrolled = KeychainStore.hasStoredPassphrase(vaultID: vaultID)
+    // MARK: - Worked out from the index
+
+    /// Every client's outstanding sessions, worked out once when the index or the day
+    /// changes rather than on every redraw of every screen that shows a count.
+    @Published public private(set) var outstanding: [ClientCode: [PredictedSession]] = [:]
+    /// The retention review, likewise: the badge on the tab bar used to run the whole
+    /// review every time the main screen redrew.
+    @Published public private(set) var retentionReview: [RetentionAssessment] = []
+
+    public var retentionNeedingAttention: [RetentionAssessment] {
+        retentionReview.filter(\.needsAttention)
     }
 
-    /// Whether this device can be asked to confirm the counsellor is present at all, and
-    /// what it would ask with. Both are read fresh: Face ID can be turned off in the
-    /// device's own settings between one launch and the next.
-    public var deviceCheckAvailable: Bool { DeviceCheck.isAvailable }
-    public var deviceCheckMethod: DeviceCheck.Method { DeviceCheck.method }
+    /// Both depend on today's date as well as on the index, so this also runs whenever the
+    /// app comes back on screen — a list left open overnight must not show yesterday's.
+    func recomputeDerived() {
+        outstanding = SessionPrediction.expectedForEveryClient(in: index)
+        recomputeRetention()
+    }
 
-    /// When the last check passed. Nil while locked, and cleared by every lock, so a check
-    /// can never outlive the session it was taken in.
-    private var lastCheckPassed: Date?
-    /// When the app left the foreground. Only set for a real backgrounding — a system
-    /// prompt makes the app inactive without it having gone anywhere.
-    private var awaySince: Date?
-    /// True while a check is on screen, so the app going inactive *because of that check*
-    /// is not mistaken for the counsellor leaving.
-    private var checkInFlight = false
+    private func recomputeRetention() {
+        retentionReview = RetentionEngine.review(clients: index.clients, policy: retentionPolicy)
+    }
 
-    private var files: FileSystemVaultStore?
-    private var session: VaultSession?
-    private var store: VaultStore?
-    private var indexStore: IndexStore?
-    private var vaultID: String?
+    // MARK: - Vault state
+
+    var files: FileSystemVaultStore?
+    var session: VaultSession?
+    var store: VaultStore?
+    var indexStore: IndexStore?
+    /// The open folder's vault identifier. Read when the folder is attached — before any
+    /// unlock — because it is what finds this vault's Face ID item on a cold launch.
+    var vaultID: String?
     /// Autosaved, unsaved notes. Created once and kept for the life of the app: it holds
     /// no vault state of its own, and unlike the index it must survive a lock — the drafts
     /// are encrypted with the index key, which survives one too.
-    private let draftStore = DraftStore()
+    let draftStore = DraftStore()
+    /// Revoked by every lock and every new session. See `run`.
+    var sessionToken = SessionToken()
+    /// A reissued recovery key waiting to be typed back before it is written. See
+    /// `AppModel+Access`.
+    var pendingReissue: PreparedRecoveryKey?
 
-    private static let queue = DispatchQueue(label: "com.charlottebloor.groundworknotes.vault", qos: .userInitiated)
-    private static let retentionKey = "retention.policy"
-    private static let noteFieldsKey = "note.fields"
-    private static let noteTemplatesKey = "note.templates"
-    private static let lockPolicyKey = "lock.policy"
+    static let queue = DispatchQueue(label: "com.charlottebloor.groundworknotes.vault", qos: .userInitiated)
 
     public init() {
-        loadRetentionPolicy()
-        loadNoteFields()
-        loadNoteTemplates()
-        loadLockPolicy()
+        loadSettings()
+        recomputeDerived()
     }
 
     // MARK: - Lifecycle
 
     public func start() async {
         phase = .starting
+        // Before anything else touches the vault, so there is nothing of this run's to
+        // sweep up by mistake.
+        await run(nil, sessionBound: false) {
+            PlaintextScratch.sweepLeftovers()
+        } then: { _ in }
+
         do {
             guard let url = try VaultBookmark.resolve() else {
                 phase = .chooseFolder
@@ -189,115 +209,55 @@ public final class AppModel: ObservableObject {
         }
         files = fileStore
         folderName = url.lastPathComponent
+        // Read now, not at the first unlock. It used to be set only by an unlock, so on a
+        // cold launch the app did not know which keychain item was this vault's: the
+        // unlock screen never offered Face ID and the launch never started it, and the
+        // biometric unlock only ever worked after locking a vault already opened that run.
+        vaultID = verdict == .existingVault ? Self.readVaultID(from: fileStore) : nil
+        refreshBiometricsEnrolled()
         phase = verdict == .existingVault ? .locked : .createVault
     }
 
     public func forgetFolder() {
         lock()
-        if let files, let vaultID = Self.readVaultID(from: files) {
-            KeychainStore.forget(vaultID: vaultID)
+        let forgotten = vaultID ?? files.flatMap(Self.readVaultID)
+        if let forgotten {
+            KeychainStore.forget(vaultID: forgotten)
+            // The index cache and any drafts are ciphertext under the key just deleted, so
+            // they are unreadable already — but "forgets this vault" should leave nothing
+            // of it behind, readable or not.
+            IndexStore(vaultID: forgotten)?.discard()
+            if let draftStore {
+                Self.queue.async { draftStore.clearAll(vaultID: forgotten) }
+            }
         }
         files?.relinquish()
         VaultBookmark.clear()
         files = nil
+        indexStore = nil
+        vaultID = nil
         folderName = nil
         phase = .chooseFolder
         refreshBiometricsEnrolled()
     }
 
-    /// The vault's `jti`, read the same non-secret way `unlockWithBiometrics` does — the
-    /// config is signed rather than encrypted, so this needs no key. Nil if the folder has
-    /// no vault in it or the read fails, in which case there is nothing to forget.
-    private static func readVaultID(from files: FileSystemVaultStore) -> String? {
+    /// The vault's `jti`, read without the key — the config is signed rather than
+    /// encrypted. Nil if the folder has no vault in it or the read fails.
+    static func readVaultID(from files: FileSystemVaultStore) -> String? {
         guard let configData = try? files.read(at: [VaultLayout.vaultConfigFilename]),
               let configuration = try? VaultBootstrap.decodeConfiguration(configData) else { return nil }
         return configuration.jti
     }
 
-    // MARK: - Creating and unlocking
-
-    public func createVault(passphrase: String) async {
-        guard let files else { return }
-        await run("Creating the vault…") {
-            try VaultBootstrap.createVault(in: files, passphrase: passphrase)
-        } then: { [weak self] created in
-            guard let self else { return }
-            self.adopt(session: created.session, files: files)
-            self.pendingRecoveryKey = created.recoveryKey
-            self.phase = .revealRecoveryKey
-        }
-    }
-
-    /// The counsellor has confirmed they have written the recovery key down. It is dropped
-    /// from memory here and there is no way back to it — which is the point.
-    public func acknowledgeRecoveryKey() {
-        pendingRecoveryKey = nil
-        phase = .unlocked
-        Task { await refreshIndex(force: true) }
-    }
-
-    public func unlock(passphrase: String, rememberWithBiometrics: Bool = false) async {
-        guard let files else { return }
-        await run("Unlocking…") {
-            try VaultBootstrap.open(files, passphrase: passphrase)
-        } then: { [weak self] session in
-            guard let self else { return }
-            self.adopt(session: session, files: files)
-            if rememberWithBiometrics {
-                KeychainStore.storePassphrase(passphrase, vaultID: session.configuration.jti)
-                // After `adopt`, which has already asked and been told no.
-                self.refreshBiometricsEnrolled()
-            }
-            // Typing the passphrase *is* a check, and the strongest one this app has, so it
-            // stands for the next minute like any other — opening a note straight after
-            // unlocking does not ask twice.
-            self.lastCheckPassed = Date()
-            self.lockReason = .manual
-            self.phase = .unlocked
-            Task { await self.refreshIndex(force: false) }
-        }
-    }
-
-    /// Unlocks using the passphrase held behind Face ID / Touch ID.
-    ///
-    /// Needs the vault's identifier before it can find the keychain item, and that lives in
-    /// the vault config — which is readable without the key, because it is signed rather
-    /// than encrypted.
-    public func unlockWithBiometrics() async {
-        guard let files else { return }
-        guard let configData = try? files.read(at: [VaultLayout.vaultConfigFilename]),
-              let configuration = try? VaultBootstrap.decodeConfiguration(configData) else {
-            errorMessage = "The vault folder couldn't be read — check it's still where you left it."
+    func refreshBiometricsEnrolled() {
+        guard let vaultID else {
+            biometricsEnrolled = false
             return
         }
-
-        // Off the main thread on purpose. `SecItemCopyMatching` on an item behind
-        // `.userPresence` does not return until the counsellor has answered the prompt, so
-        // called here — on the main actor — it holds the main thread for as long as somebody
-        // takes to look at their phone. Everything the app draws is frozen for that whole
-        // time, the scene's own comings and goings queue up behind it, and iOS is entitled
-        // to kill an app that stops answering for long enough.
-        let vaultIdentifier = configuration.jti
-        let result = await Task.detached(priority: .userInitiated) {
-            KeychainStore.passphrase(vaultID: vaultIdentifier, reason: "Unlock your clinical notes")
-        }.value
-
-        switch result {
-        case .value(let passphrase):
-            await unlock(passphrase: passphrase)
-        case .cancelled:
-            // Declining is a normal choice — the passphrase field is still right there.
-            break
-        case .failed:
-            // Somebody's face or passcode did not match. The passphrase is the only way in
-            // from here: `lockReason` stops the screen offering the check again.
-            lockReason = .checkFailed
-        case .unavailable:
-            errorMessage = "Face ID unlock isn't set up any more on this device — use your passphrase, then turn it back on from the unlock screen."
-            KeychainStore.remove(.passphrase, vaultID: configuration.jti)
-            refreshBiometricsEnrolled()
-        }
+        biometricsEnrolled = KeychainStore.hasStoredPassphrase(vaultID: vaultID)
     }
+
+    // MARK: - Locking
 
     /// Drops the key and everything derived from it. Folder access is kept — it is
     /// permission to a folder, not to its contents, and re-acquiring it on every unlock
@@ -308,12 +268,22 @@ public final class AppModel: ObservableObject {
     /// leave a locked vault unable to unlock again without choosing the folder afresh.
     /// `relinquish()` is only called from `forgetFolder()`, where the store is discarded too.
     public func lock(reason: LockReason = .manual) {
+        // First, so that anything still running for the session being closed — a rebuild,
+        // an import, a sync — stops, and anything that finishes anyway is thrown away
+        // rather than putting the client list back into a locked app.
+        sessionToken.revoke()
+        sessionToken = SessionToken()
+
         lockReason = reason
-        lastCheckPassed = nil
+        presence.forgetCheck()
         session = nil
         store = nil
         index = .empty
         issues = []
+        // A reissued key that was never typed back goes too. Nothing is lost by it: the
+        // key was never written, so the old one is still the one that works.
+        pendingRecoveryKey = nil
+        pendingReissue = nil
         if phase == .unlocked { phase = .locked }
         // The vault identifier survives a lock, so the unlock screen still knows whether it
         // may offer the Face ID button — but the item itself may have been removed by a
@@ -321,7 +291,9 @@ public final class AppModel: ObservableObject {
         refreshBiometricsEnrolled()
     }
 
-    private func adopt(session: VaultSession, files: FileSystemVaultStore) {
+    func adopt(session: VaultSession, files: FileSystemVaultStore) {
+        sessionToken.revoke()
+        sessionToken = SessionToken()
         self.session = session
         self.vaultID = session.configuration.jti
         self.store = VaultStore(engine: session.engine, files: files, deviceName: DeviceIdentity.current)
@@ -329,666 +301,77 @@ public final class AppModel: ObservableObject {
         refreshBiometricsEnrolled()
     }
 
-    // MARK: - Checks
-    //
-    // Where the app asks "is this still you?", and nowhere else:
-    //
-    //   * coming back to the app, unless the counsellor has set a grace period and is
-    //     inside it (`becameActive`);
-    //   * opening a note, which is the clinical content itself;
-    //   * changing something that decides who gets in — the passphrase, the recovery key,
-    //     this setting, the folder, an export, a destruction.
-    //
-    // Everywhere else the door has already been answered. A check that fails is never
-    // survivable: it drops the key and puts the passphrase in the way, because a check
-    // that can be shrugged off is decoration.
-
-    /// Confirms the counsellor is present, for one action inside an already-unlocked app.
-    ///
-    /// Returns whether the action may go ahead. A refusal is complete — the caller must do
-    /// nothing at all — and after a *failed* check there is no longer an unlocked app to
-    /// return to.
-    public func confirmIdentity(reason: String) async -> Bool {
-        guard phase == .unlocked else { return false }
-        if LockPolicy.checkStands(lastPassed: lastCheckPassed) { return true }
-
-        // A device with no biometry and no passcode cannot be asked, and an unlocked vault
-        // is already as far as this app's own evidence goes: the passphrase was typed to
-        // get here. Refusing everything would mean a passphrase before every note, which
-        // ends with the passphrase taped to the back of the phone. Settings says plainly
-        // that this device has no check.
-        guard DeviceCheck.isAvailable else { return true }
-
-        checkInFlight = true
-        let outcome = await DeviceCheck.confirm(reason: reason)
-        endCheck()
-
-        switch outcome {
-        case .passed:
-            lastCheckPassed = Date()
-            return true
-        case .cancelled:
-            // Changed their mind, or handed the phone back. Costs them this action and
-            // nothing else — nothing was shown, so nothing needs taking away.
-            return false
-        case .failed:
-            lock(reason: .checkFailed)
-            return false
-        case .unavailable:
-            // Biometry and passcode both disappeared between `isAvailable` and here.
-            lock(reason: .checkUnavailable)
-            return false
-        }
-    }
-
-    /// The app is leaving the foreground.
-    ///
-    /// The shield goes up on the way out rather than on the way back, so the app switcher's
-    /// card is the launch screen. `awaySince` is only set for a real backgrounding: an
-    /// inactive app is often just an app with a system prompt in front of it.
-    public func enterBackground(reallyAway: Bool, at date: Date = Date()) {
-        // A check of our own makes the app inactive too — a Face ID prompt is a system
-        // window in front of it — and shielding then is how the app ends up showing the
-        // launch screen at somebody who never left. Only a real backgrounding shields
-        // during a check; `.background` still does, so swiping away mid-prompt is covered.
-        if !reallyAway && checkInFlight { return }
-        isShielded = true
-        guard reallyAway, !checkInFlight, awaySince == nil else { return }
-        awaySince = date
-    }
-
-    /// Ends a check, and takes the shield down with it.
-    ///
-    /// Whoever starts a check has to finish it, because `becameActive` will not: it returns
-    /// immediately while a check is in flight, unable to tell "the prompt came back" from
-    /// "the counsellor did". The two events race — the scene turns active as the prompt
-    /// closes, and the check's answer arrives on a hop back to the main actor — so a check
-    /// that left the shield to `becameActive` would strand it up whenever the scene won.
-    /// That is the stuck launch screen: the app open behind it, the shield accepting the
-    /// taps, and the only way out backgrounding it, which asks for Face ID again.
-    private func endCheck() {
-        checkInFlight = false
-        // Not while the app is genuinely away: there the shield is doing its actual job,
-        // and `becameActive` owns taking it down once the time away has been paid for.
-        if awaySince == nil { isShielded = false }
-    }
-
-    /// The app is back on screen. Resolves whatever the time away costs before the shield
-    /// comes down, so nothing is visible until it has been paid.
-    public func becameActive(at date: Date = Date()) async {
-        // A check is on screen: this is the prompt returning, not the counsellor. The check
-        // itself will take the shield down when it finishes.
-        guard !checkInFlight else { return }
-
-        // Everything below is driven by scene-phase *edges*, and an edge can be missed — a
-        // blocked main thread, two transitions collapsed into one, a prompt that came and
-        // went while the app was busy. A shield that is only ever lowered by an edge is a
-        // shield that stays up for good when one goes astray, over an app that is running
-        // perfectly behind it. So being active at all is enough to take it down when
-        // nothing is asking for it.
-        if awaySince == nil { isShielded = false }
-
-        guard let since = awaySince else {
-            isShielded = false
-            return
-        }
-        awaySince = nil
-
-        guard phase == .unlocked else {
-            // Already locked: the unlock screen is the check. Start the biometric unlock
-            // rather than making them reach for a button they were always going to press.
-            isShielded = false
-            await unlockIfBiometricsOffered()
-            return
-        }
-
-        switch lockPolicy.resume(afterAwayFor: date.timeIntervalSince(since)) {
-        case .straightBackIn:
-            isShielded = false
-        case .needsCheck:
-            // Deliberately not the grace period: coming back is a new arrival, whatever
-            // happened a minute ago inside the app.
-            lastCheckPassed = nil
-            checkInFlight = true
-            let outcome = await DeviceCheck.confirm(reason: "Confirm it's you to open your notes")
-            endCheck()
-            switch outcome {
-            case .passed:
-                lastCheckPassed = Date()
-            case .cancelled:
-                lock(reason: .away)
-            case .failed:
-                lock(reason: .checkFailed)
-            case .unavailable:
-                lock(reason: .checkUnavailable)
-            }
-            isShielded = false
-        case .needsUnlock:
-            lock(reason: .away)
-            isShielded = false
-            await unlockIfBiometricsOffered()
-        }
-    }
-
-    /// Starts the biometric unlock when the lock screen is entitled to offer it, so a
-    /// reopen is one glance rather than a glance and a tap.
-    public func unlockIfBiometricsOffered() async {
-        guard phase == .locked, lockReason.allowsBiometricUnlock, biometricsEnrolled else { return }
-        checkInFlight = true
-        await unlockWithBiometrics()
-        endCheck()
-    }
-
-    /// Changes how long the app may be away before it asks again — itself a check, since a
-    /// lock setting anyone holding the phone could loosen is not a lock setting.
-    @discardableResult
-    public func setReopenGrace(_ seconds: TimeInterval) async -> Bool {
-        guard lockPolicy.reopenGrace != seconds else { return true }
-        guard await confirmIdentity(reason: "Confirm it's you before changing when the app asks again") else {
-            return false
-        }
-        lockPolicy.reopenGrace = seconds
-        persistLockPolicy()
-        return true
-    }
-
-    // MARK: - Index
-
-    /// Loads the cached index, then rebuilds from the vault.
-    ///
-    /// Cache first so the list is on screen immediately, rebuild always so it is right —
-    /// another device may have added notes since this one last looked, and there is no
-    /// server to tell us. The rebuild replaces the cache when it finishes.
-    public func refreshIndex(force: Bool) async {
-        guard let store else { return }
-
-        if !force, let cached = indexStore?.load() {
-            index = cached
-        }
-
-        await run("Reading the vault…") {
-            try store.rebuildIndex()
-        } then: { [weak self] result in
-            guard let self else { return }
-            self.index = result.index
-            self.issues = result.issues
-            self.indexStore?.save(result.index)
-        }
-    }
-
-    // MARK: - Notes
-
-    public func addNote(
-        client: ClientCode,
-        sessionDate: Date,
-        template: NoteTemplate,
-        body: String,
-        fieldValues: [String: String] = [:],
-        supersedes: NoteID? = nil
-    ) async {
-        guard let store else { return }
-        let note = NoteRecord(
-            client: client,
-            session: sessionDate,
-            written: Date(),
-            device: store.deviceName,
-            template: template,
-            supersedes: supersedes,
-            extraHeaders: noteFields.headers(from: fieldValues),
-            body: body
-        )
-        await run("Saving…") {
-            _ = try store.write(note: note)
-        } then: { [weak self] _ in
-            Task { await self?.refreshIndex(force: true) }
-        }
-    }
-
-    public func readNote(_ entry: NoteIndexEntry) async -> NoteRecord? {
-        guard let store else { return nil }
-        var result: NoteRecord?
-        await run(nil) {
-            try store.readNote(client: entry.client, filename: entry.filename)
-        } then: { note in
-            result = note
-        }
-        return result
-    }
-
-    // MARK: - Drafts
-
-    /// Everything the editor does with a half-written note goes through here, so views
-    /// never reach into the crypto module themselves — and so all three calls can be
-    /// no-ops the moment the vault is locked.
-    ///
-    /// Saving is fire-and-forget onto the vault queue rather than awaited: it happens as
-    /// the counsellor types, and a draft is never worth a pause between two keystrokes.
-    /// The queue is serial, so a save enqueued just before a clear still lands first and
-    /// the clear still wins.
-    public func saveDraft(_ draft: NoteDraft) {
-        guard store != nil, let vaultID, let draftStore else { return }
-        Self.queue.async { draftStore.save(draft, vaultID: vaultID) }
-    }
-
-    public func loadDraft(client: ClientCode, correcting: NoteID?) async -> NoteDraft? {
-        guard store != nil, let vaultID, let draftStore else { return nil }
-        var draft: NoteDraft?
-        await run(nil) {
-            draftStore.load(vaultID: vaultID, client: client, correcting: correcting)
-        } then: { found in
-            draft = found
-        }
-        return draft
-    }
-
-    public func clearDraft(client: ClientCode, correcting: NoteID?) {
-        guard store != nil, let vaultID, let draftStore else { return }
-        Self.queue.async { draftStore.clear(vaultID: vaultID, client: client, correcting: correcting) }
-    }
-
-    // MARK: - Clients
-
-    public func createClient(_ code: ClientCode) async {
-        guard let store else { return }
-        let event = ClientMetadataEvent(
-            client: code,
-            device: store.deviceName,
-            status: .active,
-            retentionBasis: .adult
-        )
-        await run("Adding \(code)…") {
-            try store.write(event: event)
-        } then: { [weak self] _ in
-            // Client metadata only: no note has changed, so the index is brought up to date
-            // in place rather than by re-reading and decrypting the whole vault.
-            self?.applyToIndex([code: event])
-        }
-    }
-
-    public func updateClient(
-        _ code: ClientCode,
-        status: ClientStatus,
-        retentionBasis: RetentionBasis,
-        lastContactOverride: Date?,
-        schedule: SessionSchedule?,
-        seriesStart: Date?
-    ) async {
-        guard let store else { return }
-        let event = ClientMetadataEvent(
-            client: code,
-            device: store.deviceName,
-            status: status,
-            retentionBasis: retentionBasis,
-            lastContactOverride: lastContactOverride,
-            schedule: schedule,
-            seriesStart: seriesStart
-        )
-        await run("Saving…") {
-            try store.write(event: event)
-        } then: { [weak self] _ in
-            self?.applyToIndex([code: event])
-        }
-    }
-
-    /// Folds freshly written client metadata into the index and saves it.
-    ///
-    /// The event this app has just written is, by definition, the latest in that client's
-    /// log, and the log folds latest-wins — so this is the same answer a full rebuild would
-    /// give, without opening a single note. See `VaultIndex.updatingClients`.
-    private func applyToIndex(_ events: [ClientCode: ClientMetadataEvent]) {
-        guard !events.isEmpty else { return }
-        index = index.updatingClients(events)
-        indexStore?.save(index)
-    }
-
-    // MARK: - Predicted sessions
-
-    /// Every session this client should have had since their first note, and has not.
-    ///
-    /// Not only the ones since the *latest* note: writing one of them up must not make the
-    /// rest disappear, which is exactly what anchoring on the latest note used to do.
-    ///
-    /// Computed entirely from the vault — the notes already stored and the cadence in the
-    /// client's metadata — so it is right on a Mac that has never been in contact with
-    /// GroundWork, as long as iCloud has brought the vault across. See
-    /// `docs/schedule-sync.md`.
-    public func predictedSessions(for code: ClientCode) -> [PredictedSession] {
-        SessionPrediction.expected(for: code, in: index)
-    }
-
-    /// The same thing for every client at once, for the client list.
-    ///
-    /// Asking `predictedSessions(for:)` per row re-reads the whole note list per client;
-    /// worked out once for the list this is a single pass. Clients with nothing outstanding
-    /// are simply absent.
-    public func outstandingSessions() -> [ClientCode: [PredictedSession]] {
-        SessionPrediction.expectedForEveryClient(in: index)
-    }
-
-    // MARK: - Schedule sync
-
-    public var rosterFileName: String? { RosterBookmark.storedDisplayName }
-    public var rosterLastSync: Date? { RosterBookmark.lastSync }
-
-    /// Called with the file the picker returned. Remembers it, then reads it — choosing the
-    /// file and syncing it are one action as far as the counsellor is concerned.
-    ///
-    /// Bookmarking goes through `run` rather than being done here, because a file freshly
-    /// exported into iCloud Drive may still be a placeholder: it is worth waiting a few
-    /// seconds for, and waiting on the main thread is how an app gets killed by the
-    /// watchdog instead.
-    public func chooseRosterFile(_ url: URL) async -> RosterSyncPlan? {
-        var remembered = false
-        await run("Remembering that file…") { () -> Bool in
-            try RosterBookmark.store(url, downloadTimeout: 15)
-            return true
-        } then: { ok in
-            remembered = ok
-        }
-        guard remembered else { return nil }
-        // `rosterFileName` reads UserDefaults rather than published state, so nothing has
-        // told the settings screen its name just changed.
-        objectWillChange.send()
-        return await planScheduleSync()
-    }
-
-    public func forgetRosterFile() {
-        RosterBookmark.clear()
-        objectWillChange.send()
-    }
-
-    /// Reads the roster and works out what would change. Writes nothing.
-    ///
-    /// Split from `applyScheduleSync` on purpose: a sync can end a client, which starts a
-    /// retention clock, so it is shown before it happens rather than reported afterwards.
-    public func planScheduleSync() async -> RosterSyncPlan? {
-        guard let store else { return nil }
-        let url: URL?
-        do {
-            url = try RosterBookmark.resolve()
-        } catch {
-            report(error)
-            return nil
-        }
-        guard let url else { return nil }
-
-        let device = store.deviceName
-        var plan: RosterSyncPlan?
-        await run("Reading GroundWork's schedules…") { () -> RosterSyncPlan in
-            let roster = try ScheduleRoster.parse(try RosterBookmark.read(url))
-            let current = try store.allCurrentMetadata()
-            var built = RosterSync.plan(
-                roster: roster,
-                existing: current.events,
-                knownClients: Array(current.events.keys),
-                device: device
-            )
-            if !current.issues.isEmpty {
-                built = RosterSyncPlan(
-                    changes: built.changes,
-                    unchanged: built.unchanged,
-                    untouched: built.untouched,
-                    issues: built.issues + current.issues
-                )
-            }
-            return built
-        } then: { result in
-            plan = result
-        }
-        return plan
-    }
-
-    /// Writes an approved plan. One metadata event per client that actually changed.
-    ///
-    /// `progress` is called from the vault queue as each client lands, so a sync of two
-    /// hundred clients shows a bar that moves rather than a spinner that does not.
-    ///
-    /// A sync writes client metadata and nothing else, so the index is updated in place
-    /// afterwards. It used to call `refreshIndex(force:)`, which re-reads and decrypts every
-    /// note in the vault — on a full vault that is tens of seconds of work after a sync that
-    /// could not have changed a single note, and it is what made a big sync feel endless.
-    @discardableResult
-    public func applyScheduleSync(
-        _ plan: RosterSyncPlan,
-        progress: @escaping (Int, Int) -> Void = { _, _ in }
-    ) async -> Int {
-        guard let store, !plan.isEmpty else {
-            RosterBookmark.lastSync = Date()
-            return 0
-        }
-        var applied: [ClientCode: ClientMetadataEvent] = [:]
-        let total = plan.changes.count
-
-        // No busy message: the sync screen shows its own progress, client by client, and a
-        // modal spinner over the top of it would hide the one thing worth watching.
-        await run(nil) { () -> [ClientCode: ClientMetadataEvent] in
-            var written: [ClientCode: ClientMetadataEvent] = [:]
-            for (offset, change) in plan.changes.enumerated() {
-                try store.write(event: change.event)
-                written[change.event.client] = change.event
-                progress(offset + 1, total)
-            }
-            return written
-        } then: { written in
-            applied = written
-        }
-
-        if !applied.isEmpty {
-            RosterBookmark.lastSync = Date()
-            applyToIndex(applied)
-        }
-        return applied.count
-    }
-
-    // MARK: - Retention
-
-    public var retentionReview: [RetentionAssessment] {
-        RetentionEngine.review(clients: index.clients, policy: retentionPolicy)
-    }
-
-    public var retentionNeedingAttention: [RetentionAssessment] {
-        retentionReview.filter(\.needsAttention)
-    }
-
-    /// Destroys every note for one client. Only ever reached through `DestroyClientView`,
-    /// which requires the code to be typed out in full first.
-    public func destroy(client code: ClientCode) async {
-        guard let store else { return }
-        // A destroyed client whose half-written note survived in Application Support would
-        // make a liar of the destruction promise, so the drafts go with the notes.
-        let drafts = draftStore
-        let vaultID = self.vaultID
-        await run("Removing \(code)…") {
-            try store.destroyEverything(for: code)
-            if let drafts, let vaultID { drafts.clearAll(vaultID: vaultID) }
-        } then: { [weak self] _ in
-            Task { await self?.refreshIndex(force: true) }
-        }
-    }
-
-    // MARK: - Import
-
-    /// Codes already in this vault, so the import screen can offer an existing client
-    /// rather than inventing a second code for somebody who is already here.
-    public var existingClientCodes: [ClientCode] { index.clients.map(\.code) }
-
-    /// Writes an approved import plan into the vault.
-    ///
-    /// Goes through the same serial queue as every other write, so an import cannot race
-    /// a note being saved on the other tab — and through `ImportRunner`, which uses the
-    /// ordinary `VaultStore` write path rather than one of its own.
-    public func runImport(
-        plan: ImportPlan,
-        progress: @escaping (Int, Int) -> Void
-    ) async -> ImportReport? {
-        guard let store else { return nil }
-        let existing = Set(index.clients.map(\.code))
-        var report: ImportReport?
-
-        // No busy message: the import screen shows its own progress, note by note, and a
-        // modal spinner over the top of it would hide the one thing worth watching.
-        await run(nil) { () -> ImportReport in
-            ImportRunner.run(plan: plan, store: store, existingClients: existing) { step in
-                progress(step.completed, step.total)
-            }
-        } then: { result in
-            report = result
-        }
-
-        if report != nil {
-            await refreshIndex(force: true)
-        }
-        return report
-    }
-
-    // MARK: - Export
-
-    /// Writes the whole vault out as plain files into a folder the user picked.
-    public func export(to destination: URL) async -> Int {
-        guard let store else { return 0 }
-        var written = 0
-
-        await run("Exporting…") { () -> (Int, [VaultIssue]) in
-            let accessed = destination.startAccessingSecurityScopedResource()
-            defer { if accessed { destination.stopAccessingSecurityScopedResource() } }
-
-            let root = destination.appendingPathComponent("GroundWork Notes Export \(VaultDate.filenameStamp(Date()))", isDirectory: true)
-            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-
-            var count = 0
-            let issues = try store.exportPlaintext { components, data in
-                var url = root
-                for component in components.dropLast() {
-                    url = url.appendingPathComponent(component, isDirectory: true)
-                }
-                try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-                try data.write(to: url.appendingPathComponent(components[components.count - 1]), options: .atomic)
-                count += 1
-            }
-            return (count, issues)
-        } then: { [weak self] result in
-            written = result.0
-            self?.issues = result.1
-        }
-        return written
-    }
-
-    // MARK: - Passphrase
-
-    public func changePassphrase(current: String, new: String) async -> Bool {
-        guard let files else { return false }
-        var succeeded = false
-        await run("Changing the passphrase…") {
-            try VaultBootstrap.changePassphrase(in: files, current: current, new: new)
-        } then: { _ in
-            succeeded = true
-        }
-        if succeeded, let vaultID, KeychainStore.hasStoredPassphrase(vaultID: vaultID) {
-            KeychainStore.storePassphrase(new, vaultID: vaultID)
-        }
-        return succeeded
-    }
-
-    public func resetPassphrase(recoveryKey: RecoveryKey, newPassphrase: String) async -> Bool {
-        guard let files else { return false }
-        var succeeded = false
-        await run("Restoring access…") {
-            try VaultBootstrap.resetPassphrase(in: files, recoveryKey: recoveryKey, newPassphrase: newPassphrase)
-        } then: { _ in
-            succeeded = true
-        }
-        return succeeded
-    }
-
-    public func regenerateRecoveryKey(passphrase: String) async {
-        guard let files else { return }
-        await run("Issuing a new recovery key…") {
-            try VaultBootstrap.regenerateRecoveryKey(in: files, passphrase: passphrase)
-        } then: { [weak self] key in
-            self?.pendingRecoveryKey = key
-        }
-    }
-
-    public func dismissRecoveryKey() {
-        pendingRecoveryKey = nil
-    }
-
     // MARK: - Plumbing
 
     /// Runs vault work off the main thread on the shared serial queue, with a busy message
-    /// and one error path. Errors surface as `errorMessage`; nothing is swallowed.
-    private func run<T>(
+    /// and one error path. Errors surface as `errorMessage`; nothing is swallowed — except
+    /// from a session that has ended.
+    ///
+    /// **`sessionBound`**, the default, ties the result to the session that asked for it.
+    /// If the vault is locked while the work runs, the result is dropped and `handle` is
+    /// never called. Without this a rebuild started just before a lock finished just after
+    /// it and put the whole client list back into a locked app. Only work that is not about
+    /// an open session — the passphrase files, the schedule file's bookmark — passes false.
+    ///
+    /// Returns whether `handle` ran, which is to say whether the work succeeded and still
+    /// counts. Callers that need to know if something was saved ask this rather than
+    /// inspecting `errorMessage`, which may be holding an error from something else.
+    @discardableResult
+    func run<T>(
         _ message: String?,
+        sessionBound: Bool = true,
         _ work: @escaping () throws -> T,
         then handle: @escaping (T) -> Void
-    ) async {
-        busyMessage = message
-        defer { busyMessage = nil }
+    ) async -> Bool {
+        let token = sessionToken
+        // Only a message this call put up is this call's to take down: a quiet read landing
+        // in the middle of a save must not clear "Saving…" from under it.
+        if let message { busyMessage = message }
+        defer { if message != nil, busyMessage == message { busyMessage = nil } }
+
         do {
             let value: T = try await withCheckedThrowingContinuation { continuation in
                 Self.queue.async {
                     continuation.resume(with: Result { try work() })
                 }
             }
+            if sessionBound && token.isRevoked { return false }
             handle(value)
+            return true
         } catch {
+            // A failure in a session that has since been locked is nobody's to read now —
+            // and is usually the lock itself, stopping the work.
+            if sessionBound && token.isRevoked { return false }
             report(error)
+            return false
         }
     }
 
-    private func report(_ error: Error) {
-        if let vaultError = error as? VaultError {
-            errorMessage = vaultError.errorDescription
-        } else {
-            errorMessage = error.localizedDescription
-        }
+    func report(_ error: Error) {
+        // `VaultError` is a `LocalizedError`, so this is already its own wording.
+        errorMessage = error.localizedDescription
+    }
+}
+
+/// Whether the session that started some work is still the open one.
+///
+/// A class, not a flag on `AppModel`, so that work on the vault queue can hold the one for
+/// *its* session and ask it from there: `AppModel` is main-actor state and the queue cannot
+/// read it. Locking revokes the current token and makes a new one, so every piece of work
+/// started before the lock sees the revocation, and nothing started after it does.
+final class SessionToken: @unchecked Sendable {
+    private let lock = NSLock()
+    private var revoked = false
+
+    var isRevoked: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return revoked
     }
 
-    private func loadRetentionPolicy() {
-        guard let data = UserDefaults.standard.data(forKey: Self.retentionKey),
-              let stored = try? JSONDecoder().decode(RetentionPolicy.self, from: data) else { return }
-        retentionPolicy = stored
-    }
-
-    private func persistRetentionPolicy() {
-        guard let data = try? JSONEncoder().encode(retentionPolicy) else { return }
-        UserDefaults.standard.set(data, forKey: Self.retentionKey)
-    }
-
-    private func loadNoteFields() {
-        guard let data = UserDefaults.standard.data(forKey: Self.noteFieldsKey),
-              let stored = try? JSONDecoder().decode(NoteFieldSettings.self, from: data) else { return }
-        // Normalised so a built-in added in a later version appears for someone who has
-        // already saved their settings once.
-        noteFields = stored.normalised()
-    }
-
-    private func persistNoteFields() {
-        guard let data = try? JSONEncoder().encode(noteFields) else { return }
-        UserDefaults.standard.set(data, forKey: Self.noteFieldsKey)
-    }
-
-    private func loadNoteTemplates() {
-        guard let data = UserDefaults.standard.data(forKey: Self.noteTemplatesKey),
-              let stored = try? JSONDecoder().decode(NoteTemplateSettings.self, from: data) else { return }
-        // Normalised so a built-in added in a later version appears for someone who has
-        // already saved a template of their own.
-        noteTemplates = stored.normalised()
-    }
-
-    private func persistNoteTemplates() {
-        guard let data = try? JSONEncoder().encode(noteTemplates) else { return }
-        UserDefaults.standard.set(data, forKey: Self.noteTemplatesKey)
-    }
-
-    private func loadLockPolicy() {
-        guard let data = UserDefaults.standard.data(forKey: Self.lockPolicyKey),
-              let stored = try? JSONDecoder().decode(LockPolicy.self, from: data) else { return }
-        lockPolicy = stored
-    }
-
-    private func persistLockPolicy() {
-        guard let data = try? JSONEncoder().encode(lockPolicy) else { return }
-        UserDefaults.standard.set(data, forKey: Self.lockPolicyKey)
+    func revoke() {
+        lock.lock()
+        revoked = true
+        lock.unlock()
     }
 }

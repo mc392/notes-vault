@@ -244,6 +244,12 @@ struct ChangePassphraseView: View {
 
 /// Reissuing invalidates the written copy, so the new one has to be shown and confirmed the
 /// same way the first one was.
+///
+/// And only then written. The new key is made, shown and typed back first; the old one
+/// stops working at "I have written it down", not at "Issue a new key". Closing the sheet,
+/// or the app locking, before that point abandons the new key and leaves the old one
+/// exactly as it was — rather than leaving a vault whose only recovery key was on screen
+/// for a moment and never copied down.
 struct ReissueRecoveryKeyView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
@@ -268,12 +274,13 @@ struct ReissueRecoveryKeyView: View {
                     } header: {
                         Text("Your new recovery key")
                     } footer: {
-                        Text("Your old key stopped working the moment this one was issued. Write this one down and destroy the old paper copy.")
+                        Text("Your old key still works until you confirm this one. Once you do, the old key stops working — destroy the old paper copy.")
                     }
                     Section {
                         Button("I have written it down") {
-                            model.dismissRecoveryKey()
-                            dismiss()
+                            Task {
+                                if await model.confirmRecoveryKey() { dismiss() }
+                            }
                         }
                         .disabled(!matches)
                     }
@@ -281,7 +288,7 @@ struct ReissueRecoveryKeyView: View {
                     Section {
                         SecureField("Your passphrase", text: $passphrase)
                     } footer: {
-                        Text("Issuing a new key immediately stops the old one working. Do this if you think the written copy has been seen by someone else.")
+                        Text("The old key stops working once you have written the new one down and typed it back. Do this if you think the written copy has been seen by someone else.")
                     }
                     Section {
                         Button("Issue a new key") {
@@ -305,17 +312,17 @@ struct ReissueRecoveryKeyView: View {
                 }
             }
             .confirmationDialog(
-                "Close without confirming your new key?",
+                "Close without issuing your new key?",
                 isPresented: $confirmingClose,
                 titleVisibility: .visible
             ) {
-                Button("Close anyway", role: .destructive) {
+                Button("Close and keep the old key", role: .destructive) {
                     model.dismissRecoveryKey()
                     dismiss()
                 }
                 Button("Go back", role: .cancel) { }
             } message: {
-                Text("The old key no longer works. If you have not written this one down, you will have no recovery key.")
+                Text("This new key will be thrown away and never issued. Your old key keeps working.")
             }
         }
         .vaultSheet(minHeight: 440)

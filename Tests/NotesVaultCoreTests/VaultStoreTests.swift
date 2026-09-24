@@ -156,6 +156,24 @@ final class VaultStoreTests: XCTestCase {
         XCTAssertEqual(sm2?.firstContact, Fixture.date("2026-05-01T09:30:00Z"))
     }
 
+    /// Locking the vault while the index is being rebuilt stops the walk rather than
+    /// decrypting the rest of the vault for nobody.
+    func testARebuildStopsWhenAskedTo() throws {
+        let (store, _, _) = Fixture.store()
+        _ = try store.write(note: note("SM2", "2026-05-01T09:30:00Z"))
+        XCTAssertThrowsError(try store.rebuildIndex(shouldContinue: { false })) { error in
+            XCTAssertEqual(error as? VaultError, .vaultNotOpen)
+        }
+    }
+
+    func testAnExportStopsWhenAskedTo() throws {
+        let (store, _, _) = Fixture.store()
+        _ = try store.write(note: note("SM2", "2026-05-01T09:30:00Z"))
+        var emitted = 0
+        XCTAssertThrowsError(try store.exportPlaintext(shouldContinue: { false }) { _, _ in emitted += 1 })
+        XCTAssertEqual(emitted, 0)
+    }
+
     /// A client whose metadata file is missing — created by writing a note and nothing else
     /// — must still be listed. A missing metadata file making notes invisible would be the
     /// worst failure mode available here.

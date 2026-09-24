@@ -49,6 +49,15 @@ struct NoteEditorView: View {
     @State private var autosave: Task<Void, Never>?
     @State private var attemptedRestore = false
 
+    /// True from the tap on Save until the vault has answered. The busy overlay lives on the
+    /// screen *under* this sheet, so it never covered the Save button: a second tap while
+    /// the first was still writing filed the note twice, and in an append-only vault the
+    /// second copy can never be taken out again.
+    @State private var isSaving = false
+    /// Why the last save failed, shown here rather than in the app's alert — that alert
+    /// belongs to the screen under this sheet and cannot appear over it.
+    @State private var saveFailure: String?
+
     /// Long enough that a fast typist is not encrypting on every keystroke, short enough
     /// that a phone killed in the background loses a sentence rather than a session.
     private static let autosaveDelay = Duration.seconds(1)
@@ -107,6 +116,11 @@ struct NoteEditorView: View {
             // with a fixed height the keyboard then covered; here it is the element that
             // stretches, and the keyboard shortens the stack rather than sitting over it.
             VStack(spacing: 0) {
+                if let saveFailure {
+                    saveFailureNotice(saveFailure)
+                    Divider()
+                }
+
                 if let restoredAt = restoredDraftSavedAt {
                     restoredDraftNotice(savedAt: restoredAt)
                     Divider()
@@ -126,26 +140,15 @@ struct NoteEditorView: View {
                     Button("Cancel") {
                         if hasContent { confirmingDiscard = true } else { dismiss() }
                     }
+                    .disabled(isSaving)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
-                        autosave?.cancel()
-                        Task {
-                            await model.addNote(
-                                client: client,
-                                sessionDate: sessionDate,
-                                template: template,
-                                body: body_,
-                                fieldValues: fieldValues,
-                                supersedes: correcting?.id
-                            )
-                            // Only once the note is genuinely in the vault. If the write
-                            // failed, the draft is the only copy left of what was typed.
-                            if model.errorMessage == nil { clearDraft() }
-                            dismiss()
-                        }
+                    if isSaving {
+                        ProgressView()
+                    } else {
+                        Button("Save", action: save)
+                            .disabled(!hasContent || isUnchangedCorrection)
                     }
-                    .disabled(!hasContent || isUnchangedCorrection)
                 }
             }
             .confirmationDialog(
@@ -333,6 +336,70 @@ struct NoteEditorView: View {
             .padding(.vertical, 9)
     }
 
+    // MARK: - Saving
+
+    private func save() {
+        guard !isSaving else { return }
+        isSaving = true
+        saveFailure = nil
+        autosave?.cancel()
+        // The draft first. Cancelling the debounce above drops up to a second of typing it
+        // had not written yet, and if the save below fails the draft is the only copy of
+        // the note there is. The vault queue is serial, so this lands before the note does.
+        saveDraftNow()
+
+        Task {
+            let saved = await model.addNote(
+                client: client,
+                sessionDate: sessionDate,
+                template: template,
+                body: body_,
+                fieldValues: fieldValues,
+                supersedes: correcting?.id
+            )
+            isSaving = false
+            guard saved else {
+                // Stays open with everything still in it, and says why. The app's own alert
+                // would only appear once this sheet had gone — so the message is moved here
+                // rather than shown twice.
+                saveFailure = model.errorMessage ?? "The note could not be saved to the vault folder."
+                model.errorMessage = nil
+                return
+            }
+            // Only once the note is genuinely in the vault.
+            clearDraft()
+            dismiss()
+        }
+    }
+
+    private func saveFailureNotice(_ message: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Label {
+                Text("Not saved. \(message) Your note is still here, and kept as a draft.")
+            } icon: {
+                Image(systemName: "exclamationmark.triangle.fill")
+            }
+            .font(.footnote)
+            .foregroundStyle(.orange)
+            .layoutPriority(1)
+
+            Spacer(minLength: 0)
+
+            Button {
+                saveFailure = nil
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+            .accessibilityLabel("Dismiss")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.thinMaterial)
+    }
+
     // MARK: - Draft autosave
 
     /// One line, dismissible, above everything else on the screen.
@@ -373,9 +440,7 @@ struct NoteEditorView: View {
     /// "from 14:02" on a note left open since Tuesday would be actively misleading.
     private static func noticeTime(_ date: Date) -> String {
         guard Calendar.current.isDateInToday(date) else { return Formatted.dateTime(date) }
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm"
-        return formatter.string(from: date)
+        return Formatted.time(date)
     }
 
     /// True when there is something a counsellor typed that the vault does not have.

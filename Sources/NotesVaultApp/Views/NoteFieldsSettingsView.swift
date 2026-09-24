@@ -99,7 +99,7 @@ struct NoteFieldsSettingsView: View {
             addingField = false
         } catch {
             // Left open so the name is still there to correct, rather than typed again.
-            model.errorMessage = (error as? VaultError)?.errorDescription ?? error.localizedDescription
+            model.errorMessage = error.localizedDescription
         }
     }
 

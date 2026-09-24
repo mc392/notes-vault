@@ -140,7 +140,7 @@ struct NoteTemplatesSettingsView: View {
         do {
             try model.noteTemplates.removeTemplate(id: definition.id)
         } catch {
-            model.errorMessage = (error as? VaultError)?.errorDescription ?? error.localizedDescription
+            model.errorMessage = error.localizedDescription
         }
     }
 }
@@ -283,7 +283,7 @@ private struct TemplateEditorView: View {
             dismiss()
         } catch {
             // Left open, so what was typed is still there to correct rather than typed again.
-            model.errorMessage = (error as? VaultError)?.errorDescription ?? error.localizedDescription
+            model.errorMessage = error.localizedDescription
         }
     }
 }
