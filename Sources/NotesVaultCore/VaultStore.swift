@@ -271,20 +271,15 @@ public final class VaultStore {
 
     /// The folded, current metadata for a client — or nil if they have never had any
     /// written, which is normal for a client created by writing their first note.
+    ///
+    /// A metadata file that will not decrypt or parse is left out of the fold, as it is
+    /// everywhere else — but this form has nowhere to report that, so it is for callers
+    /// that only need the answer. Anything that shows the counsellor a result uses
+    /// `allCurrentMetadata()`, which says what it skipped.
     public func currentMetadata(for code: ClientCode) throws -> ClientMetadataEvent? {
         guard let folderID = try directoryID(for: code) else { return nil }
-        let filenames = try listFilenames(for: code).events
-
-        var events: [ClientMetadataEvent] = []
-        for filename in filenames {
-            let path = try layout.filePath(named: filename, in: folderID)
-            guard files.fileExists(at: path) else { continue }
-            if let plaintext = try? layout.engine.decryptContent(try files.read(at: path)),
-               let event = try? ClientMetadataEvent.parse(plaintext) {
-                events.append(event)
-            }
-        }
-        return ClientMetadataEvent.fold(events)
+        let events = try listFilenames(for: code).events
+        return ClientMetadataEvent.fold(readEvents(events, for: code, in: folderID).events)
     }
 
     /// The folded current metadata for every client in the vault, in one walk.
@@ -293,6 +288,10 @@ public final class VaultStore {
     /// a vault of a few hundred clients should not pay to list and hash each folder more
     /// than once. Note bodies are never opened here: this reads the `.client` files only,
     /// which is why a sync is not as slow as a full index rebuild.
+    ///
+    /// An unreadable `.client` file is reported, not skipped quietly. It used to be skipped
+    /// here while the index rebuild reported it — so a sync could plan against a client's
+    /// older status, from a fold missing its latest event, and never say so.
     public func allCurrentMetadata() throws -> (events: [ClientCode: ClientMetadataEvent], issues: [VaultIssue]) {
         let listing = try listClientCodes()
         var events: [ClientCode: ClientMetadataEvent] = [:]
@@ -304,20 +303,34 @@ public final class VaultStore {
                 let contents = try listFilenames(for: code)
                 issues.append(contentsOf: contents.issues)
 
-                var clientEvents: [ClientMetadataEvent] = []
-                for filename in contents.events {
-                    let path = try layout.filePath(named: filename, in: folderID)
-                    guard files.fileExists(at: path) else { continue }
-                    if let plaintext = try? layout.engine.decryptContent(try files.read(at: path)),
-                       let event = try? ClientMetadataEvent.parse(plaintext) {
-                        clientEvents.append(event)
-                    }
-                }
-                if let folded = ClientMetadataEvent.fold(clientEvents) {
+                let read = readEvents(contents.events, for: code, in: folderID)
+                issues.append(contentsOf: read.issues)
+                if let folded = ClientMetadataEvent.fold(read.events) {
                     events[code] = folded
                 }
             } catch {
                 issues.append(VaultIssue(location: code.rawValue, message: error.localizedDescription))
+            }
+        }
+        return (events, issues)
+    }
+
+    /// Decrypts and parses one client's `.client` files. The one place that is done, so
+    /// the sync and the index can no longer disagree about what counts as readable.
+    private func readEvents(
+        _ filenames: [String],
+        for code: ClientCode,
+        in folderID: Data
+    ) -> (events: [ClientMetadataEvent], issues: [VaultIssue]) {
+        var events: [ClientMetadataEvent] = []
+        var issues: [VaultIssue] = []
+        for filename in filenames {
+            do {
+                let path = try layout.filePath(named: filename, in: folderID)
+                let plaintext = try layout.engine.decryptContent(try files.read(at: path))
+                events.append(try ClientMetadataEvent.parse(plaintext))
+            } catch {
+                issues.append(VaultIssue(location: "\(code)/\(filename)", message: error.localizedDescription))
             }
         }
         return (events, issues)
@@ -362,17 +375,9 @@ public final class VaultStore {
                 }
             }
 
-            var clientEvents: [ClientMetadataEvent] = []
-            for filename in contents.events {
-                do {
-                    let path = try layout.filePath(named: filename, in: folderID)
-                    let plaintext = try layout.engine.decryptContent(try files.read(at: path))
-                    clientEvents.append(try ClientMetadataEvent.parse(plaintext))
-                } catch {
-                    issues.append(VaultIssue(location: "\(code)/\(filename)", message: error.localizedDescription))
-                }
-            }
-            if let folded = ClientMetadataEvent.fold(clientEvents) {
+            let read = readEvents(contents.events, for: code, in: folderID)
+            issues.append(contentsOf: read.issues)
+            if let folded = ClientMetadataEvent.fold(read.events) {
                 events[code] = folded
             }
         }

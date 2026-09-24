@@ -17,16 +17,7 @@ public struct IndexStore {
     private let fileURL: URL
 
     public init?(vaultID: String) {
-        guard let support = try? FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        ) else { return nil }
-
-        let directory = support.appendingPathComponent("NotesVault", isDirectory: true)
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-
+        guard let directory = SealedLocalFile.directory() else { return nil }
         self.vaultID = vaultID
         // The vault's `jti` is a random identifier from its own config file. It says
         // nothing about the counsellor, the folder or the clients — so an index filename
@@ -36,36 +27,15 @@ public struct IndexStore {
 
     public func load() -> VaultIndex? {
         guard let key = KeychainStore.indexKey(vaultID: vaultID),
-              let sealed = try? Data(contentsOf: fileURL),
-              let box = try? AES.GCM.SealedBox(combined: sealed),
-              let plaintext = try? AES.GCM.open(box, using: key) else { return nil }
-
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        guard let index = try? decoder.decode(VaultIndex.self, from: plaintext) else { return nil }
-        guard index.version == VaultIndex.formatVersion else { return nil }
+              let index = SealedLocalFile.read(VaultIndex.self, from: fileURL, key: key),
+              index.version == VaultIndex.formatVersion else { return nil }
         return index
     }
 
     @discardableResult
     public func save(_ index: VaultIndex) -> Bool {
         guard let key = KeychainStore.indexKey(vaultID: vaultID) else { return false }
-
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        guard let plaintext = try? encoder.encode(index),
-              let sealed = try? AES.GCM.seal(plaintext, using: key).combined else { return false }
-
-        do {
-            #if os(iOS)
-            try sealed.write(to: fileURL, options: [.atomic, .completeFileProtection])
-            #else
-            try sealed.write(to: fileURL, options: [.atomic])
-            #endif
-            return true
-        } catch {
-            return false
-        }
+        return SealedLocalFile.write(index, to: fileURL, key: key)
     }
 
     public func discard() {

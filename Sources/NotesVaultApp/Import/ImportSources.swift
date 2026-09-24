@@ -1,6 +1,7 @@
 import Foundation
 import PDFKit
 import NotesVaultCore
+import NotesVaultCrypto
 
 /// Text out of a PDF.
 ///
@@ -66,6 +67,12 @@ enum ImportFileCollector {
             let accessed = url.startAccessingSecurityScopedResource()
             defer { if accessed { url.stopAccessingSecurityScopedResource() } }
 
+            // A single picked file can still be a placeholder. Ask for it before deciding it
+            // is missing, as the folder walk below does for everything inside a folder.
+            if ICloudFile.placeholderURL(for: url) != nil {
+                _ = ICloudFile.materialise(url, timeout: downloadTimeout, acceptingLocalCopy: true)
+            }
+
             var isDirectory: ObjCBool = false
             guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
                 collection.issues.append(VaultIssue(
@@ -86,10 +93,14 @@ enum ImportFileCollector {
 
     private static func gather(folder: URL, into collection: inout Collection, maximumFileBytes: Int, fileLimit: Int) {
         let base = folder.deletingLastPathComponent()
+        // Hidden files are skipped by hand rather than with `.skipsHiddenFiles`, because an
+        // iCloud placeholder is a hidden file: `.Session notes.docx.icloud`. Letting the
+        // enumerator drop them silently skipped every note that had not been downloaded
+        // to this device — the import said nothing, and those notes were simply not in it.
         guard let enumerator = FileManager.default.enumerator(
             at: folder,
             includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
-            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+            options: [.skipsPackageDescendants]
         ) else {
             collection.issues.append(VaultIssue(location: folder.lastPathComponent, message: "This folder could not be read."))
             return
@@ -98,7 +109,8 @@ enum ImportFileCollector {
         // `.rtfd` and `.textbundle` are folders that hold one note. The enumerator is told
         // to skip package contents, so they arrive as a single item and are unpacked here
         // rather than as a scattering of `TXT.rtf` files with no client attached.
-        for case let url as URL in enumerator {
+        for case let found as URL in enumerator {
+            var url = found
             guard collection.files.count < fileLimit else {
                 collection.issues.append(VaultIssue(
                     location: folder.lastPathComponent,
@@ -108,6 +120,28 @@ enum ImportFileCollector {
             }
             let name = url.lastPathComponent
             guard !ignoredNames.contains(name) else { continue }
+
+            if name.hasPrefix(".") {
+                // A placeholder stands for the file it will become: ask for that, and carry
+                // on with it. Any other hidden item is nobody's notes — and a hidden folder
+                // (`.git`, `.Trash`) is not walked into either.
+                guard let real = ICloudFile.materialisedName(for: name) else {
+                    if (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true {
+                        enumerator.skipDescendants()
+                    }
+                    continue
+                }
+                url = url.deletingLastPathComponent().appendingPathComponent(real)
+                guard !ignoredNames.contains(real) else { continue }
+                if ICloudFile.materialise(url, timeout: downloadTimeout, acceptingLocalCopy: true) == .timedOut {
+                    collection.skipped += 1
+                    collection.issues.append(VaultIssue(
+                        location: real,
+                        message: "\(real) is still downloading from iCloud. Wait for it to finish and import again."
+                    ))
+                    continue
+                }
+            }
 
             if url.pathExtension.lowercased() == "rtfd" {
                 let inner = url.appendingPathComponent("TXT.rtf")
@@ -161,21 +195,12 @@ enum ImportFileCollector {
     /// difference between importing someone's records and telling them their files are
     /// missing.
     private static func materialise(_ url: URL) throws {
-        let values = try? url.resourceValues(forKeys: [.isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey])
-        guard values?.isUbiquitousItem == true,
-              values?.ubiquitousItemDownloadingStatus != .current else { return }
-
-        try FileManager.default.startDownloadingUbiquitousItem(at: url)
-        let deadline = Date().addingTimeInterval(downloadTimeout)
-        while Date() < deadline {
-            let status = (try? url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey]))?.ubiquitousItemDownloadingStatus
-            if status == .current { return }
-            Thread.sleep(forTimeInterval: 0.25)
+        guard ICloudFile.materialise(url, timeout: downloadTimeout, acceptingLocalCopy: true) != .timedOut else {
+            throw ImportError.unsupportedFormat(
+                name: url.lastPathComponent,
+                detail: "it is still downloading from iCloud. Wait for it to finish and import again."
+            )
         }
-        throw ImportError.unsupportedFormat(
-            name: url.lastPathComponent,
-            detail: "it is still downloading from iCloud. Wait for it to finish and import again."
-        )
     }
 
     private static func components(of url: URL, under base: URL) -> [String] {

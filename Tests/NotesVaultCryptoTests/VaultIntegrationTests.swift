@@ -178,6 +178,36 @@ final class VaultIntegrationTests: XCTestCase {
         XCTAssertThrowsError(try VaultBootstrap.open(files, recoveryKey: created.recoveryKey))
     }
 
+    /// A prepared key changes nothing until it is installed: the old key keeps opening the
+    /// vault while the new one is on screen, so abandoning it part-way loses nothing.
+    func testAPreparedRecoveryKeyRetiresNothingUntilItIsInstalled() throws {
+        let created = try makeVault(passphrase: "a passphrase worth typing")
+
+        let prepared = try VaultBootstrap.prepareRecoveryKey(in: files, passphrase: "a passphrase worth typing")
+        XCTAssertNoThrow(try VaultBootstrap.open(files, recoveryKey: created.recoveryKey))
+        XCTAssertThrowsError(try VaultBootstrap.open(files, recoveryKey: prepared.key))
+
+        try VaultBootstrap.installRecoveryKey(prepared, in: files)
+        XCTAssertNoThrow(try VaultBootstrap.open(files, recoveryKey: prepared.key))
+        XCTAssertThrowsError(try VaultBootstrap.open(files, recoveryKey: created.recoveryKey))
+    }
+
+    func testPreparingARecoveryKeyNeedsTheRightPassphrase() throws {
+        _ = try makeVault(passphrase: "a passphrase worth typing")
+        XCTAssertThrowsError(try VaultBootstrap.prepareRecoveryKey(in: files, passphrase: "nearly right")) { error in
+            XCTAssertEqual(error as? VaultError, .wrongPassphrase)
+        }
+    }
+
+    /// The `jti` names this vault's keychain items. A config without one must not be read
+    /// as an empty name that every such vault would share.
+    func testAConfigWithoutAnIdentifierIsNotAVault() throws {
+        let header = Data(#"{"alg":"HS256"}"#.utf8).urlSafeBase64String()
+        let payload = Data(#"{"format":8,"cipherCombo":"SIV_GCM"}"#.utf8).urlSafeBase64String()
+        let token = Data("\(header).\(payload).c2lnbmF0dXJl".utf8)
+        XCTAssertThrowsError(try VaultBootstrap.decodeConfiguration(token))
+    }
+
     // MARK: - Notes, for real
 
     func testANoteSurvivesBeingClosedAndReopened() throws {

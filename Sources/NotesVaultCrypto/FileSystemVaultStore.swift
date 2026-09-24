@@ -1,51 +1,6 @@
 import Foundation
 import NotesVaultCore
 
-#if canImport(UIKit)
-import UIKit
-#endif
-
-/// Which device wrote a file. Part of every filename, so two devices writing the same
-/// client in the same minute produce two files instead of one overwrite.
-public enum DeviceIdentity {
-    private static let suffixDefaultsKey = "device.suffix"
-    private static let suffixLength = 3
-
-    private static var base: String {
-        #if os(iOS)
-        let name = UIDevice.current.model.lowercased()
-        return name.contains("ipad") ? "ipad" : "iphone"
-        #elseif os(macOS)
-        return "mac"
-        #else
-        return "device"
-        #endif
-    }
-
-    /// A short random suffix, generated once per install and persisted in `UserDefaults` —
-    /// this is a stable label, not a secret, so it doesn't belong in the keychain. Without
-    /// it, two iPhones on the same iCloud account (old phone + new phone) both write
-    /// `…-iphone.note` and collide; the suffix makes the device segment unique per install
-    /// rather than per model.
-    private static var suffix: String {
-        let defaults = UserDefaults.standard
-        if let existing = defaults.string(forKey: suffixDefaultsKey), !existing.isEmpty {
-            return existing
-        }
-        let alphabet = CrockfordBase32.alphabet
-        let generated = String((0..<suffixLength).map { _ in alphabet.randomElement()! }).lowercased()
-        defaults.set(generated, forKey: suffixDefaultsKey)
-        return generated
-    }
-
-    /// e.g. `iphone-k3m`, `mac-7f2`. Existing files written before this suffix existed
-    /// (`…-iphone.note`) are untouched and remain valid — names are just names in an
-    /// append-only store, and nothing parses structure back out of them.
-    public static var current: String {
-        "\(base)-\(suffix)"
-    }
-}
-
 /// `VaultFileStore` over the real filesystem, inside a folder the user picked.
 ///
 /// Storage layer, per the architecture: **no OAuth, no cloud provider API, no network call
@@ -116,7 +71,7 @@ public final class FileSystemVaultStore: VaultFileStore {
         }
         // Not there as a real file — but iCloud may be holding it as a placeholder, which
         // is a file that exists as far as the user is concerned.
-        return placeholderURL(for: target) != nil
+        return ICloudFile.placeholderURL(for: target) != nil
     }
 
     public func contentsOfDirectory(at path: [String]) throws -> [String] {
@@ -131,9 +86,16 @@ public final class FileSystemVaultStore: VaultFileStore {
                 // Undownloaded items appear as `.SM2.c9r.icloud`; present them under the
                 // name they will have once they arrive, or every listing would be wrong on
                 // a device that has been offline.
+                //
+                // And ask for every one of them now, together. A listing is nearly always
+                // followed by reading what is in it, and each read waits for its own file;
+                // asked for one at a time, a phone that has been offline pays every
+                // download in turn, on the one queue every save is also waiting on.
                 result = entries.compactMap { entry in
                     guard entry != ".DS_Store" else { return nil }
-                    return Self.materialisedName(for: entry)
+                    guard let name = ICloudFile.materialisedName(for: entry) else { return entry }
+                    ICloudFile.requestDownload(url.appendingPathComponent(name))
+                    return name
                 }
             } catch {
                 thrown = error
@@ -209,38 +171,19 @@ public final class FileSystemVaultStore: VaultFileStore {
 
     // MARK: - iCloud placeholders
 
-    /// `SM2.c9r` stored but not yet downloaded is on disk as `.SM2.c9r.icloud`.
-    private static func materialisedName(for entry: String) -> String {
-        guard entry.hasPrefix("."), entry.hasSuffix(".icloud") else { return entry }
-        return String(entry.dropFirst().dropLast(".icloud".count))
-    }
-
-    private func placeholderURL(for target: URL) -> URL? {
-        let placeholder = target
-            .deletingLastPathComponent()
-            .appendingPathComponent(".\(target.lastPathComponent).icloud")
-        return FileManager.default.fileExists(atPath: placeholder.path) ? placeholder : nil
-    }
-
     /// Asks iCloud for a file that is only a placeholder, and waits for it.
     private func ensureDownloaded(_ target: URL) throws {
-        guard placeholderURL(for: target) != nil || !FileManager.default.fileExists(atPath: target.path) else { return }
+        let isPlaceholder = ICloudFile.placeholderURL(for: target) != nil
+        guard isPlaceholder || !FileManager.default.fileExists(atPath: target.path) else { return }
 
-        do {
-            try FileManager.default.startDownloadingUbiquitousItem(at: target)
-        } catch {
-            // Not a ubiquitous item at all — a plain local folder. Nothing to wait for; if
-            // the file genuinely is not there the read below reports it.
+        // A vault file never changes once written, so any local copy of it is the right one.
+        switch ICloudFile.materialise(target, timeout: downloadTimeout, acceptingLocalCopy: true, pollInterval: 0.15) {
+        case .ready, .notInICloud:
+            // Not in iCloud: a plain local folder. If the file genuinely is not there the
+            // read reports it.
             return
+        case .timedOut:
+            throw VaultError.folderUnavailable("\(target.lastPathComponent) has not finished downloading from iCloud yet")
         }
-
-        let deadline = Date().addingTimeInterval(downloadTimeout)
-        while Date() < deadline {
-            let values = try? target.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey])
-            if values?.ubiquitousItemDownloadingStatus == .current { return }
-            if FileManager.default.fileExists(atPath: target.path) && placeholderURL(for: target) == nil { return }
-            Thread.sleep(forTimeInterval: 0.15)
-        }
-        throw VaultError.folderUnavailable("\(target.lastPathComponent) has not finished downloading from iCloud yet")
     }
 }

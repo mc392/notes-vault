@@ -19,15 +19,35 @@ import Foundation
 ///
 /// The proper fix is upstream: expose the stream overloads and this file disappears. That
 /// is recorded in the README as an open item, not left as a comment nobody reads.
-enum PlaintextScratch {
+public enum PlaintextScratch {
+    private static var root: URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("notesvault-scratch", isDirectory: true)
+    }
+
     static func withScratchDirectory<T>(_ body: (URL) throws -> T) throws -> T {
-        let base = FileManager.default.temporaryDirectory
-            .appendingPathComponent("notesvault-scratch", isDirectory: true)
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let base = root.appendingPathComponent(UUID().uuidString, isDirectory: true)
 
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true, attributes: protectionAttributes)
         defer { shredDirectory(base) }
         return try body(base)
+    }
+
+    /// Shreds whatever an earlier run left behind.
+    ///
+    /// The `defer` above removes every scratch directory — unless the app is killed in the
+    /// middle of an encryption, which iOS does to backgrounded apps without warning. Then
+    /// the plaintext stays in the temporary folder until the system gets round to it, and
+    /// on the Mac, with no file protection class, that file is readable by anything
+    /// running as the user. Called once at launch, before any vault work starts, so there
+    /// is nothing of this run's to sweep up by mistake.
+    public static func sweepLeftovers() {
+        guard let leftovers = try? FileManager.default.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: nil
+        ) else { return }
+        for directory in leftovers {
+            shredDirectory(directory)
+        }
     }
 
     private static var protectionAttributes: [FileAttributeKey: Any] {

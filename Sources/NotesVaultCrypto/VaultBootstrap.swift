@@ -17,6 +17,17 @@ public struct VaultConfiguration: Sendable, Equatable {
     }
 }
 
+/// A recovery key that has been made but not yet written into the vault.
+///
+/// `masterkeyFile` is the vault's masterkey wrapped under the new key — ciphertext, like
+/// every other masterkey file, so holding it in memory holds nothing the key itself does
+/// not. Until `VaultBootstrap.installRecoveryKey` writes it, the old key is the one that
+/// works.
+public struct PreparedRecoveryKey: Sendable {
+    public let key: RecoveryKey
+    let masterkeyFile: Data
+}
+
 /// An unlocked vault. Holding one of these is what "the vault is open" means.
 ///
 /// The masterkey is held for the lifetime of the session and zeroed by the library's own
@@ -76,21 +87,9 @@ public enum VaultBootstrap {
             jti: UUID().uuidString
         )
 
-        let masterkeyData = try MasterkeyFile.lock(
-            masterkey: masterkey,
-            vaultVersion: configuration.format,
-            passphrase: passphrase,
-            pepper: [UInt8](),
-            scryptCostParam: scryptCostParam
-        )
+        let masterkeyData = try wrap(masterkey, format: configuration.format, passphrase: passphrase)
         let recoveryKey = RecoveryKey()
-        let recoveryData = try MasterkeyFile.lock(
-            masterkey: masterkey,
-            vaultVersion: configuration.format,
-            passphrase: recoveryKey.passphrase,
-            pepper: [UInt8](),
-            scryptCostParam: scryptCostParam
-        )
+        let recoveryData = try wrap(masterkey, format: configuration.format, passphrase: recoveryKey.passphrase)
 
         let configData = try encodeConfiguration(configuration, signingWith: masterkey)
 
@@ -133,16 +132,13 @@ public enum VaultBootstrap {
             throw VaultError.unsupportedVaultFormat(configuration.format)
         }
 
-        let masterkeyFileData = try files.read(at: [masterkeyFile])
-        let masterkey: Masterkey
-        do {
-            masterkey = try MasterkeyFile.withContentFromData(data: masterkeyFileData)
-                .unlock(passphrase: passphrase, pepper: [UInt8]())
-        } catch MasterkeyFileError.invalidPassphrase {
-            throw VaultError.wrongPassphrase
-        } catch {
-            throw VaultError.cryptoFailure("the masterkey file could not be read: \(error.localizedDescription)")
-        }
+        let masterkey = try unwrap(
+            try files.read(at: [masterkeyFile]),
+            passphrase: passphrase,
+            refusal: masterkeyFile == VaultLayout.recoveryMasterkeyFilename
+                ? .recoveryKeyMalformed("that key does not open this vault")
+                : .wrongPassphrase
+        )
 
         // The config is signed with the masterkey, so a tampered `vault.cryptomator` — one
         // that downgrades the cipher, say — fails here rather than being obeyed.
@@ -169,6 +165,8 @@ public enum VaultBootstrap {
             )
         } catch MasterkeyFileError.invalidPassphrase {
             throw VaultError.wrongPassphrase
+        } catch {
+            throw VaultError.cryptoFailure("the passphrase could not be changed: \(error.localizedDescription)")
         }
         try files.write(updated, at: [VaultLayout.masterkeyFilename], overwrite: true)
     }
@@ -178,48 +176,82 @@ public enum VaultBootstrap {
         guard hasRecoveryKey(files) else {
             throw VaultError.folderUnavailable("this vault has no recovery key file")
         }
-        let recoveryData = try files.read(at: [VaultLayout.recoveryMasterkeyFilename])
-        let masterkey: Masterkey
-        do {
-            masterkey = try MasterkeyFile.withContentFromData(data: recoveryData)
-                .unlock(passphrase: recoveryKey.passphrase, pepper: [UInt8]())
-        } catch MasterkeyFileError.invalidPassphrase {
-            throw VaultError.recoveryKeyMalformed("that key does not open this vault")
-        }
-
-        let configuration = try decodeConfiguration(try files.read(at: [VaultLayout.vaultConfigFilename]))
-        let rewrapped = try MasterkeyFile.lock(
-            masterkey: masterkey,
-            vaultVersion: configuration.format,
-            passphrase: newPassphrase,
-            pepper: [UInt8](),
-            scryptCostParam: scryptCostParam
+        let masterkey = try unwrap(
+            try files.read(at: [VaultLayout.recoveryMasterkeyFilename]),
+            passphrase: recoveryKey.passphrase,
+            refusal: .recoveryKeyMalformed("that key does not open this vault")
         )
+        let configuration = try decodeConfiguration(try files.read(at: [VaultLayout.vaultConfigFilename]))
+        let rewrapped = try wrap(masterkey, format: configuration.format, passphrase: newPassphrase)
         try files.write(rewrapped, at: [VaultLayout.masterkeyFilename], overwrite: true)
     }
 
-    /// Issues a fresh recovery key, invalidating the old one. Used when a counsellor thinks
-    /// the written copy has been seen by someone else.
+    /// Issues a fresh recovery key, invalidating the old one, in one step.
+    ///
+    /// The app does not use this: it prepares the key, shows it, and installs it only once
+    /// it has been typed back — see `prepareRecoveryKey`. This is the same two steps back
+    /// to back, for callers with nobody to show a key to.
     public static func regenerateRecoveryKey(in files: VaultFileStore, passphrase: String) throws -> RecoveryKey {
-        let data = try files.read(at: [VaultLayout.masterkeyFilename])
-        let masterkey: Masterkey
-        do {
-            masterkey = try MasterkeyFile.withContentFromData(data: data).unlock(passphrase: passphrase, pepper: [UInt8]())
-        } catch MasterkeyFileError.invalidPassphrase {
-            throw VaultError.wrongPassphrase
-        }
+        let prepared = try prepareRecoveryKey(in: files, passphrase: passphrase)
+        try installRecoveryKey(prepared, in: files)
+        return prepared.key
+    }
 
-        let configuration = try decodeConfiguration(try files.read(at: [VaultLayout.vaultConfigFilename]))
-        let recoveryKey = RecoveryKey()
-        let recoveryData = try MasterkeyFile.lock(
-            masterkey: masterkey,
-            vaultVersion: configuration.format,
-            passphrase: recoveryKey.passphrase,
-            pepper: [UInt8](),
-            scryptCostParam: scryptCostParam
+    /// Makes a new recovery key and the masterkey file it opens, and writes nothing.
+    ///
+    /// Reissuing used to write the new file straight away, which retired the old key before
+    /// the counsellor had copied the new one down — so a lock, a crash or a closed sheet in
+    /// between left a vault whose only recovery key had been on screen for a moment and
+    /// nowhere else. Now the old key keeps working until `installRecoveryKey` runs, which
+    /// the app does only after the new one has been typed back. Abandoning a prepared key
+    /// costs nothing: it opens a file that was never written.
+    public static func prepareRecoveryKey(in files: VaultFileStore, passphrase: String) throws -> PreparedRecoveryKey {
+        let masterkey = try unwrap(
+            try files.read(at: [VaultLayout.masterkeyFilename]),
+            passphrase: passphrase,
+            refusal: .wrongPassphrase
         )
-        try files.write(recoveryData, at: [VaultLayout.recoveryMasterkeyFilename], overwrite: true)
-        return recoveryKey
+        let configuration = try decodeConfiguration(try files.read(at: [VaultLayout.vaultConfigFilename]))
+        let key = RecoveryKey()
+        return PreparedRecoveryKey(
+            key: key,
+            masterkeyFile: try wrap(masterkey, format: configuration.format, passphrase: key.passphrase)
+        )
+    }
+
+    /// Writes a prepared recovery key's masterkey file, which is the moment the old key
+    /// stops working.
+    public static func installRecoveryKey(_ prepared: PreparedRecoveryKey, in files: VaultFileStore) throws {
+        try files.write(prepared.masterkeyFile, at: [VaultLayout.recoveryMasterkeyFilename], overwrite: true)
+    }
+
+    // MARK: - Masterkey files
+
+    /// Opens a masterkey file. `refusal` is what a wrong passphrase or key is reported as,
+    /// because "wrong passphrase" is the wrong thing to tell someone typing a recovery key.
+    private static func unwrap(_ data: Data, passphrase: String, refusal: VaultError) throws -> Masterkey {
+        do {
+            return try MasterkeyFile.withContentFromData(data: data).unlock(passphrase: passphrase, pepper: [UInt8]())
+        } catch MasterkeyFileError.invalidPassphrase {
+            throw refusal
+        } catch {
+            throw VaultError.cryptoFailure("the masterkey file could not be read: \(error.localizedDescription)")
+        }
+    }
+
+    /// Wraps the masterkey under a passphrase, at the production scrypt cost.
+    private static func wrap(_ masterkey: Masterkey, format: Int, passphrase: String) throws -> Data {
+        do {
+            return try MasterkeyFile.lock(
+                masterkey: masterkey,
+                vaultVersion: format,
+                passphrase: passphrase,
+                pepper: [UInt8](),
+                scryptCostParam: scryptCostParam
+            )
+        } catch {
+            throw VaultError.cryptoFailure("the masterkey file could not be written: \(error.localizedDescription)")
+        }
     }
 
     // MARK: - vault.cryptomator (a JWS with HS256)
@@ -249,39 +281,55 @@ public enum VaultBootstrap {
     /// out which vault this is (and therefore which keychain items belong to it) before
     /// anyone has typed a passphrase.
     public static func decodeConfiguration(_ data: Data) throws -> VaultConfiguration {
-        guard let token = String(data: data, encoding: .utf8) else {
-            throw VaultError.notAVault(URL(fileURLWithPath: VaultLayout.vaultConfigFilename))
-        }
-        let segments = token.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: ".")
-        guard segments.count == 3, let payloadData = Data(urlSafeBase64: String(segments[1])) else {
-            throw VaultError.notAVault(URL(fileURLWithPath: VaultLayout.vaultConfigFilename))
-        }
-        guard let payload = try JSONSerialization.jsonObject(with: payloadData) as? [String: Any],
+        let segments = try jwsSegments(of: data)
+        guard let payloadData = Data(urlSafeBase64: String(segments[1])),
+              let payload = try JSONSerialization.jsonObject(with: payloadData) as? [String: Any],
               let format = payload["format"] as? Int else {
-            throw VaultError.notAVault(URL(fileURLWithPath: VaultLayout.vaultConfigFilename))
+            throw notAVaultConfig
+        }
+        // The `jti` names the keychain items and the local files that belong to this vault.
+        // A config without one used to be read as an empty string, which every such vault
+        // would then have shared — one vault's Face ID passphrase offered to another's.
+        // Every real Cryptomator vault has one, so a config without it is not one.
+        guard let jti = payload["jti"] as? String, !jti.isEmpty else {
+            throw notAVaultConfig
         }
 
         return VaultConfiguration(
             format: format,
             shorteningThreshold: payload["shorteningThreshold"] as? Int ?? VaultLayout.shorteningThreshold,
             cipherCombo: payload["cipherCombo"] as? String ?? "SIV_GCM",
-            jti: payload["jti"] as? String ?? ""
+            jti: jti
         )
     }
 
     static func verifySignature(of data: Data, with masterkey: Masterkey) throws {
-        guard let token = String(data: data, encoding: .utf8) else {
-            throw VaultError.notAVault(URL(fileURLWithPath: VaultLayout.vaultConfigFilename))
-        }
-        let segments = token.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: ".")
-        guard segments.count == 3, let signature = Data(urlSafeBase64: String(segments[2])) else {
-            throw VaultError.notAVault(URL(fileURLWithPath: VaultLayout.vaultConfigFilename))
+        let segments = try jwsSegments(of: data)
+        guard let signature = Data(urlSafeBase64: String(segments[2])) else {
+            throw notAVaultConfig
         }
         let signingInput = Data("\(segments[0]).\(segments[1])".utf8)
-        let expected = HMAC<SHA256>.authenticationCode(for: signingInput, using: SymmetricKey(data: Data(masterkey.rawKey)))
-        guard Data(expected) == signature else {
+        // CryptoKit's comparison rather than `==`: it takes the same time however many
+        // leading bytes match, so how long a rejection takes says nothing about the key.
+        guard HMAC<SHA256>.isValidAuthenticationCode(
+            signature,
+            authenticating: signingInput,
+            using: SymmetricKey(data: Data(masterkey.rawKey))
+        ) else {
             throw VaultError.cryptoFailure("the vault configuration file has been altered and does not match this vault's key")
         }
+    }
+
+    /// The three dot-separated parts of the token.
+    private static func jwsSegments(of data: Data) throws -> [Substring] {
+        guard let token = String(data: data, encoding: .utf8) else { throw notAVaultConfig }
+        let segments = token.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: ".")
+        guard segments.count == 3 else { throw notAVaultConfig }
+        return segments
+    }
+
+    private static var notAVaultConfig: VaultError {
+        .notAVault(URL(fileURLWithPath: VaultLayout.vaultConfigFilename))
     }
 }
 

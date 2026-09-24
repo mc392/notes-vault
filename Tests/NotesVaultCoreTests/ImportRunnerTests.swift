@@ -175,6 +175,32 @@ final class ImportRunnerTests: XCTestCase {
         XCTAssertTrue(rebuilt.issues.isEmpty)
     }
 
+    /// Locking the vault part-way through stops the import between notes: what was written
+    /// is whole and verified, what was not is untouched, and the report says how many.
+    func testAStoppedImportWritesWholeNotesOnlyAndSaysHowManyWereLeft() throws {
+        let (store, _, _) = Fixture.store()
+        var asked = 0
+        let report = ImportRunner.run(
+            plan: plan([
+                item("Sarah M", "2026-06-14T09:30:00Z", body: "One."),
+                item("Sarah M", "2026-06-21T09:30:00Z", body: "Two."),
+                item("Sarah M", "2026-06-28T09:30:00Z", body: "Three.")
+            ]),
+            store: store,
+            now: fixedNow,
+            shouldContinue: {
+                asked += 1
+                return asked <= 1
+            }
+        )
+
+        XCTAssertEqual(report.written, 1)
+        XCTAssertEqual(report.failed, 0)
+        XCTAssertEqual(report.notAttempted, 2)
+        XCTAssertTrue(report.issues.contains { $0.message.contains("locked part-way through") })
+        XCTAssertEqual(try store.rebuildIndex().index.notes(for: Fixture.code("SM2")).count, 1)
+    }
+
     /// The claim the whole import screen is built to demonstrate: what lands on disk is a
     /// ciphertext name, and the note's own words are not in the file.
     func testWhatLandsOnDiskIsNeitherTheNameNorTheWords() throws {
